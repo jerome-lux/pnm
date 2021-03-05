@@ -1,4 +1,3 @@
-#!/usr/bin/python
 # -*- coding: utf-8
 
 '''
@@ -134,7 +133,7 @@ def main():
                         high=options.vmax,
                         low=options.vmin)
 
-    else: #Parcours de tous les fichiers network du répertoire courant
+    else: #Parcours de tous les fichiers network du rï¿½pertoire courant
         i = 0
         for filename in glob.glob('*.network'):
             fileout = filename.replace("network","jpg")
