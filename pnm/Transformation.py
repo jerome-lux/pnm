@@ -3,7 +3,9 @@
 import networkx as nx
 import numpy as np
 from warnings import warn
-from pnm import pore_network, nearest_neighbor
+from pnm import pore_network, nearest_neighbor, isinside, isinside_surface
+from heapq import heappush, heappop, heapify
+from sklearn.neighbors import KDTree
 
 RATIO_REDUC = 0.5
 EPS = 1.00000001
@@ -19,7 +21,6 @@ def invasion_percolation(pn, target_porosity, face='x-', box=None, verbose=False
     keep_connected: if True, all remaining pores are connected to the network
     """
 
-    from heapq import heappush, heappop, heapify
 
     pn.graph = nx.convert_node_labels_to_integers(pn.graph)
 
@@ -148,15 +149,14 @@ def assemble_pnm(pn1, pn2, axis='x', ratio=1, minc=3, maxc=np.inf, BCgridsize=10
     nodes_to_connect2 = np.array(pn2.get_pores_by_category(
         cat2[axis])) + pn1.graph.number_of_nodes()
 
-    # Recompute BC
+    # Recompute BC nodes
     newpnm.clear_category()
-    SetBCnodes_2(newpnm, step=BCgridsize)
+    SetFaceBCnodes(newpnm, step=BCgridsize)
 
     if pn1.graph.graph['graph_type'] == 'cubic_regular' or pn2.graph.graph['graph_type'] == 'cubic_regular':
         connect_pores(newpnm, nodes_to_connect1, nodes_to_connect2)
 
     else:
-
         nodes_to_connect1.extend(nodes_to_connect2)
         # Removing existing throats from old boundary nodes
         for n in nodes_to_connect1:
@@ -176,7 +176,7 @@ def assemble_pnm(pn1, pn2, axis='x', ratio=1, minc=3, maxc=np.inf, BCgridsize=10
 def connect_pores(pn, nbunch1, nbunch2):
     """Connect pores in nbunch1 to nearest pore in nbunch2
     """
-    from scipy.spatial.distance import cdist
+
     centers = nx.get_node_attributes(pn.graph, 'center')
     centers1 = np.array([np.array(centers[i]) for i in nbunch1])
     centers2 = np.array([np.array(centers[i]) for i in nbunch2])
@@ -197,7 +197,7 @@ def add_throats(net, lowc=0, highc=np.inf, minc=0, maxc=np.inf, mode='auto', sor
 
     #from scipy.spatial import cKDTree
     #from scipy.spatial.distance import cdist
-    from sklearn.neighbors import KDTree
+
 
     if highc > maxc:
         highc = maxc
@@ -332,16 +332,29 @@ def add_throats(net, lowc=0, highc=np.inf, minc=0, maxc=np.inf, mode='auto', sor
                     net.graph.nodes[n1]['radius'], net.graph.nodes[n2]['radius']))
 
 
-def add_throats_by_surf(net, nodes=None, ratio=0.75, TRR=1, minc=0, maxc=np.inf, sort_by_radius=False, border_correction=True):
+
+def add_periodic_throats(net, delta, faces=["x", "y", "z"], ratio=0.75, TRR=1, minc=0, maxc=np.inf):
+
+    """Add throats between opposed BC pores.
+    net: pore network model instance
+    delta: min length of a throat [should be fixed according to the network's extent]
+    faces: faces to be connected ["x" connects faces "x+" and "x-"]
+    """
+
+    pass
+
+
+def add_throats_by_surf(net, nodes=None, ratio=0.75, TRR=1, minc=0, maxc=1000, sort_by_radius=False, border_correction=True):
+
     """Set throats between nearest pore neighbors such that the  pore surface / connected throat section surface <= ratio
     nodes: list of nodes to process, if None, all nodes will be processed
     ratio: pore area over total area of the connected throats
-    minc: lin connectiviy
+    TRR: throat radius ratio: radius between the throat radius and the min of the adjacent pores radii
+    minc: min connectiviy
     maxc: max connectivity
-    sort_by_radius: bool (deafult False). If True, neighbors are sorted by radius and not by distance [not recommended]
+    sort_by_radius: bool (default False). If True, neighbors are sorted by radius and not by distance [not recommended]
     border_correction: bool (default True). Reduce connecivity (i.e. ratio) of pores at the boundaries """
 
-    from sklearn.neighbors import KDTree
 
     if maxc < minc:
         maxc = minc+1
@@ -388,7 +401,7 @@ def add_throats_by_surf(net, nodes=None, ratio=0.75, TRR=1, minc=0, maxc=np.inf,
 
         print("{:5.2f}% completed  ".format(
             100*(counter+1)/len(candidates)), end="\r")
-
+        # the query_radius() and query() methods return (ind, dist) and (dist, ind) respectively...
         indices, distances = kdtree.query_radius([net.graph.nodes[n1]['center']], (
             max_pore_radius + net.graph.nodes[n1]['radius']) * 1.5, return_distance=True)
         if len(indices[0]) < maxc*2:
@@ -455,114 +468,12 @@ def add_throats_by_surf(net, nodes=None, ratio=0.75, TRR=1, minc=0, maxc=np.inf,
                 if n2 != n1 and not net.graph.has_edge(n1, n2):
                     r1 = net.graph.nodes[n1]['radius']
                     r2 = net.graph.nodes[n2]['radius']
-                    r12 = TRR*min(r1, r2)
-                    S12 = np.pi*r12**2
+                    r12 = TRR * min(r1, r2)
+                    S12 = np.pi * r12**2
                     net.add_throat(n1, n2, radius=r12)
                     net.graph.nodes[n1]['exchange_area'] += S12
                     net.graph.nodes[n2]['exchange_area'] += S12
                     break
-
-
-def prune_throats(pn, lowc, highc, minc=None):
-    """Remove throats so that the connectivity of a pore is randomly chosen between lowc and highc.
-    Make sure that a min connectivity is minc to avoid isolated pore"""
-
-    if lowc > highc:
-        highc = lowc + 1
-
-    if minc is None:
-        minc = lowc
-
-    elif minc > lowc:
-        minc = lowc
-
-    nodelist = [(n, pn.graph.degree(n))
-                for n in pn.graph.nodes if pn.graph.degree(n) > highc]
-
-    # On commence par les noeuds de plus haut degré
-    nodelist.sort(key=lambda x: x[1], reverse=True)
-
-    if len(nodelist) == 0:
-        return
-
-    nodelist, _ = list(zip(*nodelist))
-
-    for n1 in nodelist:
-
-        high2 = highc
-        low2 = lowc
-
-        edges_to_remove = pn.graph.degree(n1) - np.random.randint(low2, high2)
-        if edges_to_remove < 0:
-            return
-
-        neighbors = list(pn.graph.neighbors(n1))
-        np.random.shuffle(neighbors)
-
-        i = 0
-        for n2 in neighbors:
-            if i >= edges_to_remove:
-                break
-            if pn.graph.degree(n1) <= minc:
-                break
-            if pn.graph.degree(n2) > minc:
-                pn.graph.remove_edge(n1, n2)
-                i += 1
-
-# def prune_throats_deprec(pn,lowc,highc,minc=None,useradius=True,mode='constant',spacing = 'auto'):
-
-    # if lowc > highc:
-        #highc = lowc + 1
-
-    # if minc is None:
-        #minc = lowc
-
-    # elif minc > lowc:
-        #minc = lowc
-
-    # if spacing == 'auto':
-        #spacing = net.graph.graph['spacing'].min()
-
-    #nodelist = [(n,pn.graph.degree(n)) for n in pn.graph.nodes if pn.graph.degree(n) > highc]
-
-    #nodelist.sort(key=lambda x: x[1], reverse = True)
-
-    # if len(nodelist) == 0:
-        # return
-
-    #nodelist, _ = list(zip(*nodelist))
-
-    # for n1 in nodelist:
-
-        # if mode == 'auto' and pn.graph.graph.get('spacing',None) is not None and useradius:
-            #m = (pn.graph.nodes[n1]['radius'] / spacing)
-            #high2 = int(np.around(max(highc, highc * m)))
-            #low2 = int(np.around(max(lowc, lowc * m)))
-        # else:
-            #high2 = highc
-            #low2 = lowc
-
-        #edges_to_remove =  pn.graph.degree(n1) - np.random.randint(low2,high2)
-        # if edges_to_remove <0:
-            # return
-
-        # if useradius:
-            #neighbors = [(n,pn.graph.nodes[n]['radius']) for n in pn.graph.neighbors(n1)]
-            #neighbors.sort(key=lambda t:t[1])
-            # neighbors = [t[0] for t in neighbors]       #On supprime d'abord les capillaire reliant les petits pores
-        # else:
-            #neighbors = list(pn.graph.neighbors(n1))
-            # np.random.shuffle(neighbors)
-
-        #i = 0
-        # for n2 in neighbors:
-            # if i >= edges_to_remove:
-                # break
-            # if pn.graph.degree(n1) <= minc:
-                # break
-            # if pn.graph.degree(n2) > minc:
-                # pn.graph.remove_edge(n1,n2)
-                # i+=1
 
 
 def scale(net, factor):
@@ -596,7 +507,7 @@ def scale(net, factor):
 
 def aggregates_nodes_if_too_big(pn, nodes=None, only_smaller=True, maxradius=None):
     """For each pore in nodes (iterable), the function checks if other pore overlaps.
-    It merge overlapping pores with the larger one.
+    It merges overlapping pores with the larger one.
     """
 
     iterate = True
@@ -637,12 +548,12 @@ def aggregates_nodes_if_too_big(pn, nodes=None, only_smaller=True, maxradius=Non
                                 iterate = True
 
 
-def SetBCnodes_2(net, step=100):
+def SetFaceBCnodes(net, step=100):
+
     """Auto detect pores that are close to the boundary and mark them as boundary nodes
+    Adds category  'x+', 'x-', 'y+', 'y-', 'z+', 'z-' to boundary nodes (a node can have several caterogies)
     Distance is computed from face to pore center and NOT pore surface
     it means that big pores are not likely to be marked as boundary pore """
-
-    from sklearn.neighbors import KDTree
 
     nodes_indices = list(net.graph.nodes)
     centers = nx.get_node_attributes(net.graph, 'center')
@@ -700,7 +611,6 @@ def SetBCnodes(net, thickness, mode='center'):
     """Set the nodes category. If nodes are in a layer of given thickness from the boundary, they are tagged as boundary nodes
     Two methods: either the center or the surface of the pore in the layer"""
 
-    from pnm import isinside, isinside_surface
 
     extent = net.graph.graph['extent']
     net.graph.graph['inner_extent'] = np.array(extent) - 2*thickness
