@@ -1,18 +1,23 @@
 # coding=utf-8
 
-
+from warnings import warn
 import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+import scipy.interpolate as interpolate
 
 
 def stats(pn, bins=15, mode='vol', xscale='linear', elements='all', unit="nm", filename=None, show=True):
-    """mode = 'count' or 'vol'
-    """
 
-    from warnings import warn
-    import numpy as np
-    import matplotlib as mpl
-    import networkx as nx
-    import matplotlib.pyplot as plt
+    """Compute various network statistics either weighted by nulber or by the volume of each element
+    pn: pore network model
+    mode = 'count' or 'vol'
+    xscale: 'linear' or 'log'
+    elements: 'all', 'pores' or 'throats'
+    unit: length unit
+    filename: if not None, save the graphs in filename
+    show: plot the graphs if True [useful in a jupyter notebook]
+    """
 
     # p_radii = np.zeros(pn.graph.number_of_nodes())
     # t_radii = np.zeros(pn.graph.number_of_edges())
@@ -167,8 +172,9 @@ def distribution(n_samples, name='normal', high=np.inf, low=0, **kwargs):
 
 
 def inverse_transform_sampling_from_raw_data(data, bins, n_samples=1000, low=0, high=np.inf, **kwargs):
-    """data is the raw data distribution (may be not normalized) and bins a list of categories (in increasing order !!)"""
-    import scipy.interpolate as interpolate
+    """Draw samples from a raw distribution
+    data: the raw data distribution (may be not normalized) and bins a list of categories (**in increasing order** !!)"""
+
     data = np.array(data, dtype=np.float64)
     prob = data / data.sum()
     cum_prob = np.cumsum(prob, dtype=np.float64)
@@ -179,8 +185,8 @@ def inverse_transform_sampling_from_raw_data(data, bins, n_samples=1000, low=0, 
 
 
 def inverse_transform_sampling_from_cdf(cdf, bins, n_samples=1000, low=0, high=np.inf, **kwargs):
-    """cdf is the cumulative density function bin_edges and cdf must have the same length"""
-    import scipy.interpolate as interpolate
+    """cdf is the cumulative density function. bins and cdf must have the same length"""
+
     inv_cdf = interpolate.interp1d(
-        cum_prob, bins, bounds_error=None, fill_value='extrapolate')
+        cdf, bins, bounds_error=None, fill_value='extrapolate')
     return np.clip(inv_cdf(np.random.random(n_samples)), a_min=low, a_max=high)

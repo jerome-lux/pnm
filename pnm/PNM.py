@@ -44,7 +44,7 @@ class pore_network():
 
     @classmethod
     def read(cls, inputfilename):
-        """Read an existing network in json node_link format"""
+        """Read an existing network in recommended pickle format"""
 
         # import json
         # with open(inputfilename, 'w') as infile:
@@ -165,7 +165,7 @@ class pore_network():
     def check_overlapping(self, fit_radius=True, merge=True, mindist='auto', update_geometry=False):
         """Check for overlapping pores.  if fit_radius=True, radius are modified
         if pores cannot be fited or fit_radius = False, they are merged if merge=True or deleted if merge = False
-        if update_geometry is True, throats length and radii and automatically recomputed"""
+        if update_geometry is True, throats length and radii are automatically recomputed"""
 
         from scipy.spatial.distance import cdist
         from scipy.spatial import cKDTree
@@ -531,15 +531,17 @@ class pore_network():
                 n1, n2)
 
     def set_auto_throats_length(self):
-        """Compute throats length. If l<0 (i.e. pores overlap), set it to 0.
+        """Compute throats length [not for throats used to enforce periodicity]. If l<0 (i.e. pores overlap), set it to 0.
         \nAdd 'length' attribute to edges """
 
         for n1, n2 in self.graph.edges:
-            self.graph[n1][n2]['length'] = self._compute_auto_throat_length(
-                n1, n2)
+            if self.graph[n1][n2]['category'] != "periodic":
+                self.graph[n1][n2]['length'] = self._compute_auto_throat_length(
+                    n1, n2)
+
 
     def get_pore_distance(self, n1, n2):
-        # TODO: take into account periodic BCs !
+        # TODO: take into account periodic BCs !s
 
         try:
             delta = np.array(
@@ -625,8 +627,8 @@ class pore_network():
     def add_attributes(self, pore_dict, throat_dict):
         """Add attributes properties to an existing network"""
 
-        self.add_node_attributes(self.graph, pore_dict)
-        self.add_edge_attributes(self.graph, throat_dict)
+        self.graph.add_node_attributes(self.graph, pore_dict)
+        self.graph.add_edge_attributes(self.graph, throat_dict)
 
         self.compute_geometry()
 
@@ -715,7 +717,8 @@ class pore_network():
         # return filter(lambda n: category in val[n], self.graph.nodes)
 
     def write_props(self, filename=None):
-
+        """Write the network stats to a json file
+        """
         import json
 
         self.pnmprops = {}
