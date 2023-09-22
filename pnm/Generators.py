@@ -1,11 +1,19 @@
 # coding=utf-8
-
 import numpy as np
 import networkx as nx
 from warnings import warn
 from pnm import pore_network
-from numba import jit, float64, prange, int64
+
 import pnm
+from operator import itemgetter
+from .Stats import distribution
+from .utils import *
+
+#from scipy.spatial import cKDTree
+from sklearn.neighbors import KDTree  # A priori bcp plus rapide avec sklearn que le cKDTree de scipy
+import multiprocessing
+from functools import partial
+
 
 # TODO: clean the code, add support for periodicity
 
@@ -132,7 +140,8 @@ def cubic_PNM(extent, shape, distributions_props, lattice='c', mode='pore', chec
     return net
 
 
-def cubic_PNM_2(extent, shape, distributions_props, lattice='c', mindist='auto'):
+def cubic_PNM_no_throats(extent, shape, distributions_props, lattice='c', mindist='auto'):
+
     """Generate a regular cubic/bcc pore network *without throats*. Several pore radius distribution can be provided
     BEWARE: ***As throats are not created, geometry is not complete.***
     \nextent=(lx,ly,lz)
@@ -222,6 +231,7 @@ def cubic_PNM_2(extent, shape, distributions_props, lattice='c', mindist='auto')
 
 
 def random_PNM(npores, extent, porosity, rdist, sratio=1, TRR=1, minc=3, maxc=100, BCgridsize=100, fit_box=False):
+
     """Generate a random packing of pores following the given radius distribution rdist with a target porosity "porosity"
     Initial box extent are given, but can be modified dynamically to get the correct porosity
     npores: number of pore
@@ -230,9 +240,11 @@ def random_PNM(npores, extent, porosity, rdist, sratio=1, TRR=1, minc=3, maxc=10
     rdist: radius distribution: list of radius distributions
         (list of 2-tuple containing a dict with the dist function and probability a pore follow this distribution)
         ({"func":distribution_function},volume_fraction)
-    minc minimal pore connectivity
-    maxc maximal pore connectivity
-    s_ratio: maximal pore surface area over total intersect area of connected throats ratio
+    minc minimal pore connectivity (default 1)
+    maxc maximal pore connectivity (default 100)
+    BCgrid size: In order to assign the boundary conditions, the volume is discretised using a grid containing  BCgridsize cells per side
+    sratio: maximal pore surface area over total intersect area of connected throats ratio (default 1, which is not optimal)
+    TODO: use a sratio distribution instead of a constant value
     """
 
     pn = pnm.random_packing_opt(extent=extent,
@@ -251,70 +263,6 @@ def random_PNM(npores, extent, porosity, rdist, sratio=1, TRR=1, minc=3, maxc=10
     return pn
 
 
-def isinside_surface(coords, radius, extent, epsilon):
-
-    maxr = coords + radius
-    minr = coords - radius
-
-    category = set()
-
-    if np.all(maxr <= extent) and np.all(minr >= 0):
-        if extent[0] - coords[0] - radius < epsilon:
-            category.add('x+')
-        if extent[1] - coords[1] - radius < epsilon:
-            category.add('y+')
-        if extent[2] - coords[2] - radius < epsilon:
-            category.add('z+')
-        if coords[0] - radius < epsilon:
-            category.add('x-')
-        if coords[1] - radius < epsilon:
-            category.add('y-')
-        if coords[2] - radius < epsilon:
-            category.add('z-')
-
-        if len(category) == 0:
-            category.add('inner')
-
-        return category
-
-    return None
-
-
-def isinside(coords, radius, extent, epsilon):
-
-    maxr = coords + radius
-    minr = coords - radius
-
-    category = set()
-
-    if np.all(maxr <= extent) and np.all(minr >= 0):
-        if extent[0] - coords[0] < epsilon:
-            category.add('x+')
-        if extent[1] - coords[1] < epsilon:
-            category.add('y+')
-        if extent[2] - coords[2] < epsilon:
-            category.add('z+')
-        if coords[0] < epsilon:
-            category.add('x-')
-        if coords[1] < epsilon:
-            category.add('y-')
-        if coords[2] < epsilon:
-            category.add('z-')
-
-        if len(category) == 0:
-            category.add('inner')
-
-        return category
-
-    warn("No Category affected to pore center{} with radius {} (min={},max={}".format(
-        coords, radius, minr, maxr))
-    return None
-
-
-def eucl_dist(a, b):
-
-    return np.einsum('ij,ij->i', a-b, a-b)**0.5
-
 
 def deprec_random_packing(extent,
                           nbnodes,
@@ -328,14 +276,6 @@ def deprec_random_packing(extent,
     Use random_packing_opt instead
     """
 
-    from scipy.spatial.distance import cdist
-    from .Stats import distribution
-    from operator import itemgetter
-    #from scipy.spatial import cKDTree
-    from sklearn.neighbors import KDTree  # A priori bcp plus rapide avec sklearn
-    import multiprocessing
-    from functools import partial
-    #from sklearn.metrics import pairwise_distances
 
     # On génère les rayons
 
@@ -516,106 +456,6 @@ def deprec_random_packing(extent,
     return net
 
 
-def mindist_einsum(c0, centers, radii):
-
-    distances = np.einsum('ij,ij->i', c0-centers, c0-centers)**0.5 - radii
-
-    return distances.min()
-
-
-# 'float64(float64[:],float64[:,:],float64[:])',
-@jit(nopython=True, fastmath=True)
-def query_mindist(c0, centers, radii):
-
-    distances = ((c0 - centers)**2).sum(axis=1)**0.5 - radii
-
-    m = distances.min()
-
-    return m
-
-    # indices = np.where(dist<=r)
-
-    # return indices, dist[indices]
-
-
-# 'float64(float64[:],float64[:])',
-@jit('float64(float64[:],float64[:])', nopython=True, fastmath=True, parallel=True, nogil=True)
-def eucl_dist_naive(c0, c1):
-
-    distance = 0
-    for i in range(3):
-        distance = distance + (c0[i] - c1[i])*(c0[i] - c1[i])
-    distance = distance**0.5
-
-    return distance
-
-
-@jit('int64[:](float64[:,:],float64[:,:])', nopython=True, fastmath=True, parallel=True, nogil=True)
-def nearest_neighbor(c0, centers):
-    """Return the nearsest neighbor index of point c0
-    """
-
-    ind = np.zeros((c0.shape[0])).astype(np.int64)
-
-    for j in range(c0.shape[0]):
-
-        mindistance = eucl_dist_naive(c0[j, :], centers[0, :])  # 1er point
-        ind[j] = 0
-
-        for i in range(1, centers.shape[0]):
-            distance = eucl_dist_naive(c0[j, :], centers[i, :])
-            if distance < mindistance:
-                mindistance = distance
-                ind[j] = i
-
-    return ind
-
-# The Fastest !
-
-
-# 'float64(float64[:],float64[:,:],float64[:])',
-@jit('float64(float64[:],float64[:,:],float64[:])', nopython=True, fastmath=True, parallel=True, nogil=True)
-def query_mindist_loops(c0, centers, radii):
-
-    mindistance = eucl_dist_naive(c0, centers[0, :]) - radii[0]  # 1er point
-
-    for i in range(1, centers.shape[0]):
-        distance = eucl_dist_naive(c0, centers[i, :]) - radii[i]
-        if distance < mindistance:
-            mindistance = distance
-
-    return mindistance
-
-
-# 'float64(float64[:],float64[:,:],float64[:])',
-@jit(nopython=True, fastmath=True, parallel=True, nogil=True)
-def query_mindist_loops_parallel(c0, centers, radii):
-
-    distances = np.zeros_like(radii)
-
-    for i in prange(0, centers.shape[0]):
-        distances[i] = eucl_dist_naive(c0, centers[i, :]) - radii[i]
-
-    mindist = distances[0]
-    for d in distances:
-        if d < mindist:
-            mindist = d
-    return mindist
-
-
-def generate_radii(distributions_props, nbnodes):
-
-    from .Stats import distribution
-    radii = []
-
-    for props, probs in distributions_props:
-        distgenerator = props.get("func", distribution)
-        r = list(distgenerator(n_samples=int(np.ceil(probs*nbnodes)), **props))
-        radii.extend(r)
-
-    return np.array(radii)[0:nbnodes]
-
-
 def random_packing_opt(extent,
                        nbnodes,
                        distributions_props,
@@ -626,15 +466,16 @@ def random_packing_opt(extent,
                        restart=True,
                        fit_box=False):
 
-    from operator import itemgetter
 
-    """Spherical pores packing following an arbitrary distribution using brute force approach (-> slow for large number of pores...)
-    extent: initial extent
-    nbnodes:number of pores
-    radius distribution list with probability
+    """
+    Spherical pores packing following an arbitrary distribution using brute force approach (-> slow for large number of pores...)
+    extent: initial extent [Lx, Ly, Lz]
+    nbnodes: number of pores
+    distributions_props: radius distribution list with probability
     target_porosity: tageted pore-body porosity [not the total porosity]
-    mindist: minimal distance between two pore surface
-    nb_trials: number of trials
+    mindist: minimal distance between two pore surface. If auto mindist = min (R1, R2) * 0.5
+    nb_trials: number of trials per pore
+    BCStep:  To detect boundary pores, we use a discrete grid with BCSteps to dicretize the volume
     restart : if True, the algorithm restart if a pore cannot be placed
     fit_box : if True, the number of pores is modified in order to fit into the provided extent (default False)
 
@@ -731,9 +572,7 @@ def random_packing_opt(extent,
 
     unallocated_volume = 0
 
-    for i in range(len(radii)):
-
-        r = radii[i]
+    for i, r in enumerate(radii):
 
         pore_added = False
 
@@ -794,7 +633,7 @@ def random_packing_opt(extent,
             unallocated_radii.append(i)
             unallocated_volume += (4/3)*np.pi*r**3
             # Si le volume non alloué dépasse 5% du volume poreux cible
-            if restart and unallocated_volume > 0.05*target_porosity*total_volume:
+            if restart and unallocated_volume > 0.05 * target_porosity*total_volume:
                 print("\n!!!--- Restarting ---!!!\n")
                 return random_packing_opt(extent,
                                           nbnodes,
@@ -814,7 +653,7 @@ def random_packing_opt(extent,
         zip(labels, occupied_radii)), 'radius')
     # nx.set_node_attributes(net.graph,dict(zip(labels,occupied_categories)),'category')
 
-    pnm.SetBCnodes_2(net, BCstep)
+    pnm.SetFaceBCnodes(net, BCstep)
 
     print("Porosity:", void_volume / total_volume)
     # unallocated_volume = (np.pi*(4/3)*radii[np.array(unallocated_radii,dtype=np.int)]**3).sum()
@@ -835,10 +674,6 @@ def deprec_random_packing_scipy(extent,
     """Sphere packing following an arbitrary distribution using brute force approach (-> slow for large number of pores...)
     Use random_packing_opt instead"""
 
-    from scipy.spatial.distance import cdist
-    from .Stats import distribution
-    from operator import itemgetter
-    from scipy.spatial import cKDTree
     # On génère les rayons
 
     length_OK = False
