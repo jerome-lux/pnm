@@ -4,6 +4,15 @@ import vtk
 from warnings import warn
 import numpy as np
 import networkx as nx
+from matplotlib.colors import Normalize
+import matplotlib.pyplot as plt
+
+try:
+    from mayavi import mlab
+except Exception as e:
+    print("Mayavi not installed")
+
+
 
 # TODO : change throats_opacitymap and throats_colormap to something else than list...
 
@@ -249,11 +258,6 @@ def vtk_viewer(pn, render=True, save=True, cmap='viridis', filename=None, render
     low: min value for normalization
     """
 
-    import networkx as nx
-    import numpy as np
-    from matplotlib.colors import Normalize
-    import matplotlib.pyplot as plt
-
     if high is None or low is None:
         try:
             attrval = nx.get_node_attributes(pn.graph, attr).values()
@@ -300,10 +304,6 @@ def Fast3DViewer(net, opacity=0.2, cmap='viridis', attr='radius', throats_radius
     """Quick way to vizualize big network, throats are rendered as lines
     Pores are colored by their radii"""
 
-    from mayavi import mlab
-    from matplotlib.colors import Normalize
-    import matplotlib.pyplot as plt
-
     # Nodes
     x, y, z = np.array(
         list(nx.get_node_attributes(net.graph, 'center').values())).T
@@ -325,135 +325,3 @@ def Fast3DViewer(net, opacity=0.2, cmap='viridis', attr='radius', throats_radius
                               opacity=opacity, line_width=1)
     mlab.show()
 
-
-"""PLOTLY jupyter
-import plotly.plotly as py
-import plotly.graph_objs as go
-from plotly.offline import download_plotlyjs, init_notebook_mode, plot, iplot
-
-init_notebook_mode(connected=True)
-
-import numpy as np
-
-x, y, z = np.random.multivariate_normal(np.array([0,0,0]), np.eye(3), 400).transpose()
-
-
-trace1 = go.Scatter3d(
-    x=x,
-    y=y,
-    z=z,
-    mode='markers',
-    marker=dict(
-        size=np.abs(z)*10,
-        color=z,                # set color to an array/list of desired values
-        colorscale='Viridis',   # choose a colorscale
-        opacity=0.8
-    )
-)
-
-data = [trace1]
-layout = go.Layout(
-    margin=dict(
-        l=0,
-        r=0,
-        b=0,
-        t=0
-    )
-)
-fig = go.Figure(data=data, layout=layout)
-iplot(fig, filename='3d-scatter-colorscale')
-"""
-
-
-"""#include <vtkSmartPointer.h>
-#include <vtkPolyData.h>
-#include <vtkCellArray.h>
-#include <vtkSphereSource.h>
-#include <vtkPolyDataMapper.h>
-#include <vtkRenderer.h>
-#include <vtkRenderWindow.h>
-#include <vtkRenderWindowInteractor.h>
-#include <vtkActor.h>
-#include <vtkPoints.h>
-#include <math.h>
-#include <vtkPointData.h>
-#include <vtkFloatArray.h>
-#include <vtkGlyph3D.h>
-#include <vtkUnstructuredGrid.h>
-#include <vtkLookupTable.h>
-
-#define PI 3.14159265
-
-int main(int, char *[])
-{
-    srand(time(NULL));
-
-    // create points
-    vtkSmartPointer<vtkPoints> points = vtkSmartPointer<vtkPoints>::New();
-
-    // setup scales
-    vtkSmartPointer<vtkFloatArray> scales = vtkSmartPointer<vtkFloatArray>::New();
-    scales->SetName("scales");
-
-     // setup color label
-    vtkSmartPointer<vtkFloatArray> col = vtkSmartPointer<vtkFloatArray>::New();
-    col->SetName("col");
-
-    // setup lookupTable and add some colors
-    vtkSmartPointer<vtkLookupTable> colors = vtkSmartPointer<vtkLookupTable>::New();
-    colors->SetNumberOfTableValues(4);
-    colors->SetTableValue(0 ,1.0 ,0.0 ,0.0 ,1.0); // red
-    colors->SetTableValue(1 ,0.0 ,1.0 ,0.0 ,1.0); // green
-    colors->SetTableValue(2 ,0.0 ,0.0 ,1.0 ,1.0); // blue
-    colors->SetTableValue(3 ,1.0 ,1.0 ,0.0 ,1.0); // yellow
-    // the last double value is for opacity (1->max, 0->min)
-
-    for(int i=0; i<100; i++)
-    {
-        points->InsertNextPoint(15*cos(i*PI/50), 15*sin(i*PI/50), 0); // sphere in circle
-        scales->InsertNextValue((rand()% 100)/double(100)); // random radius between 0 and 0.99
-        col->InsertNextValue((rand()% 4)); // random color label
-    }
-
-    // grid structured to append center, radius and color label
-    vtkSmartPointer<vtkUnstructuredGrid> grid = vtkSmartPointer<vtkUnstructuredGrid>::New();
-    grid->SetPoints(points);
-    grid->GetPointData()->AddArray(scales);
-    grid->GetPointData()->SetActiveScalars("scales"); // !!!to set radius first
-    grid->GetPointData()->AddArray(col);
-
-    // create anything you want here, we will use a sphere for the demo
-    vtkSmartPointer<vtkSphereSource> sphereSource = vtkSmartPointer<vtkSphereSource>::New();
-
-    // object to group sphere and grid and keep smooth interaction
-    vtkSmartPointer<vtkGlyph3D> glyph3D = vtkSmartPointer<vtkGlyph3D>::New();
-    glyph3D->SetInputData(grid);
-    glyph3D->SetSourceConnection(sphereSource->GetOutputPort());
-
-    // create a mapper and actor
-    vtkSmartPointer<vtkPolyDataMapper> mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-    mapper->SetInputConnection(glyph3D->GetOutputPort());
-
-    mapper->SetScalarModeToUsePointFieldData(); // without, color are displayed regarding radius and not color label
-    mapper->SetScalarRange(0, 3); // to scale color label (without, col should be between 0 and 1)
-    mapper->SelectColorArray("col"); // !!!to set color (nevertheless you will have nothing)
-    mapper->SetLookupTable(colors);
-
-    vtkActor *actor = vtkActor::New();
-    actor->SetMapper(mapper);
-
-    // create a renderer, render window, and interactor
-    vtkSmartPointer<vtkRenderer> renderer = vtkSmartPointer<vtkRenderer>::New();
-    vtkSmartPointer<vtkRenderWindow> renderWindow = vtkSmartPointer<vtkRenderWindow>::New();
-    renderWindow->AddRenderer(renderer);
-    vtkSmartPointer<vtkRenderWindowInteractor> renderWindowInteractor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
-    renderWindowInteractor->SetRenderWindow(renderWindow);
-    // add the actor to the scene
-    renderer->AddActor(actor);
-    renderer->SetBackground(0, 0, 0);
-    // render and interact
-    renderWindow->Render();
-    renderWindowInteractor->Start();
-    return EXIT_SUCCESS;
-}
-"""
