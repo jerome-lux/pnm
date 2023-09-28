@@ -669,7 +669,7 @@ class pore_network():
                 try:
                     self.graph[n1][n2]['radius'] = min(
                         self.graph.nodes[n1]['radius'], self.graph.nodes[n2]['radius'])
-                except:
+                except Exception as e:
                     warn(
                         "Cannot assign radius value to throat between nodes", n1, " and ", n2)
 
@@ -681,7 +681,7 @@ class pore_network():
                     if self.graph.degree(node) > 0:
                         self.graph.nodes[node]['radius'] = np.array(
                             [self.graph[node][neighbor]['radius'] for neighbor in self.graph[node]]).max()
-                except:
+                except Exception as e:
                     warn("Cannot assign radius value to node", node)
 
     def get_pores_by_category(self, category, mode='match_one', nodes=None):
