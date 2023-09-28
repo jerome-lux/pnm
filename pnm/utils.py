@@ -76,7 +76,7 @@ def eucl_dist(a, b):
 @jit('float64(float64[:],float64[:])', nopython=True, fastmath=True, nogil=True)
 def eucl_dist_naive(c0, c1):
 
-    "Return euclidean distance between two point in R3"
+    "Return euclidean distance between two points in R3"
 
     distance = 0
     for i in range(3):
