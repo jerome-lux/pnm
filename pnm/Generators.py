@@ -32,7 +32,7 @@ def cubic_PNM(extent, shape, distributions_props, lattice="c", mode="pore", chec
     net = pore_network()
     net.graph.clear()
     shape = np.array(shape)
-    net.graph.graph["extent"] = np.array(extent)
+    net.graph.graph["extent"] = extent
     net.graph.graph["graph_type"] = "cubic_regular"
     spacing = np.array(extent) / shape
     net.graph.graph["spacing"] = spacing
@@ -142,7 +142,7 @@ def cubic_PNM_no_throats(extent, shape, distributions_props, lattice="c", mindis
     net = pore_network()
     net.graph.clear()
     shape = np.array(shape)
-    net.graph.graph["extent"] = np.array(extent)
+    net.graph.graph["extent"] = extent
     net.graph.graph["graph_type"] = "cubic"
     spacing = np.array(extent) / shape
     net.graph.graph["spacing"] = spacing
@@ -212,7 +212,7 @@ def cubic_PNM_no_throats(extent, shape, distributions_props, lattice="c", mindis
     return net
 
 
-def random_PNM(npores, extent, porosity, rdist, sratio=1, TRR=1, minc=3, maxc=100, BCgridsize=100, fit_box=False):
+def random_PNM(npores, extent, porosity, rdist, sratio=1, PRTRR=1, minc=3, maxc=100, BCgridsize=100, fit_box=False):
     """Generate a random packing of pores following the given radius distribution rdist with a target porosity "porosity"
     Initial box extent are given, but can be modified dynamically to get the correct porosity
     npores: number of pore
@@ -221,6 +221,7 @@ def random_PNM(npores, extent, porosity, rdist, sratio=1, TRR=1, minc=3, maxc=10
     rdist: radius distribution: list of radius distributions
         (list of 2-tuple containing a dict with the dist function and probability a pore follow this distribution)
         ({"func":distribution_function},volume_fraction)
+    PRTRR: pore radius to to throat radius ratio
     minc minimal pore connectivity (default 1)
     maxc maximal pore connectivity (default 100)
     BCgrid size: In order to assign the boundary conditions, the volume is discretised using a grid containing  BCgridsize cells per side
@@ -239,7 +240,7 @@ def random_PNM(npores, extent, porosity, rdist, sratio=1, TRR=1, minc=3, maxc=10
         fit_box=fit_box,
     )
 
-    pnm.add_throats_by_surf(pn, ratio=sratio, TRR=TRR, minc=minc, maxc=maxc, sort_by_radius=False)
+    pnm.add_throats_by_surf(pn, ratio=sratio, PRTRR=PRTRR, minc=minc, maxc=maxc, sort_by_radius=False, border_correction=True)
     pn.compute_geometry(autothroats=False)
 
     return pn
@@ -308,7 +309,7 @@ def deprec_random_packing(
 
     net = pore_network()
     net.graph.clear()
-    net.graph.graph["extent"] = np.array(extent)
+    net.graph.graph["extent"] = list(extent)
     net.graph.graph["graph_type"] = "random_packing"
 
     radii.sort()
@@ -337,7 +338,7 @@ def deprec_random_packing(
     else:
         epsilon = boundary_thickness
 
-    net.graph.graph["inner_extent"] = np.array(extent - 2 * epsilon)
+    net.graph.graph["inner_extent"] = list(np.array(extent - 2 * epsilon))
 
     for i, _ in enumerate(radii):
         if len(occupied_centers) > 0:
@@ -525,7 +526,7 @@ def random_packing_opt(
 
     net = pore_network()
     net.graph.clear()
-    net.graph.graph["extent"] = np.array(extent)
+    net.graph.graph["extent"] = list(extent)
     net.graph.graph["graph_type"] = "random_packing"
 
     radii.sort()
@@ -575,7 +576,7 @@ def random_packing_opt(
                 distance = np.inf
 
             if distance > r + gap:
-                occupied_centers.append(coords)
+                occupied_centers.append(list(coords)) # Convert to list to be serializable when saving the network
                 occupied_radii.append(r)
                 # occupied_categories.append(category)
                 void_volume += np.pi * (4 / 3) * r**3
@@ -687,8 +688,8 @@ def deprec_random_packing_scipy(
 
     net = pore_network()
     net.graph.clear()
-    net.graph.graph["extent"] = np.array(extent)
-    net.graph.graph["inner_extent"] = np.array(extent)
+    net.graph.graph["extent"] = list(extent)
+    net.graph.graph["inner_extent"] = list(extent)
     net.graph.graph["graph_type"] = "random_packing"
 
     radii.sort()
