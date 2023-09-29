@@ -6,6 +6,7 @@ import numpy as np
 import networkx as nx
 from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
+import pnm
 
 try:
     from mayavi import mlab
@@ -46,7 +47,9 @@ class PNM_3d_viewer():
         self.network = network
         self.actor_graph = self.network.graph.__class__()
         self.actor_graph.add_nodes_from(self.network.graph)
-        self.actor_graph.add_edges_from(self.network.graph.edges())
+        edges = [(e1, e2) for (e1, e2) in self.network.graph.edges() if not self.network.graph[e1][e2]["periodic"]]
+        # self.actor_graph.add_edges_from(self.network.graph.edges())
+        self.actor_graph.add_edges_from(edges)
 
     def make_geometry(self, **kwargs):
 
@@ -64,12 +67,13 @@ class PNM_3d_viewer():
 
             if kwargs.get('render_throats', True):
                 for n1, n2, props in self.network.graph.edges.data():
-                    c1 = self.network.graph.nodes[n1]['center']
-                    c2 = self.network.graph.nodes[n2]['center']
-                    actor = create_throat_actor(
-                        c1, c2, resolution=throat_resolution, **props)
-                    self.actor_graph[n1][n2]['actor'] = actor
-                    self.renderer.AddActor(actor)
+                    if not props['periodic']:
+                        c1 = self.network.graph.nodes[n1]['center']
+                        c2 = self.network.graph.nodes[n2]['center']
+                        actor = create_throat_actor(
+                            c1, c2, resolution=throat_resolution, **props)
+                        self.actor_graph[n1][n2]['actor'] = actor
+                        self.renderer.AddActor(actor)
 
         self.geom_complete = True
 
@@ -110,10 +114,10 @@ class PNM_3d_viewer():
                     pores_colormap.get(pore, DEFAULT_COLOR))
 
             if kwargs.get('render_throats', True):
-                if len(self.network.graph.edges) != len(self.actor_graph.edges):
-                    warn("The number of throat actors does not match the number of edges in the pore network graph. "
-                         "You should regenerate the geometry")
-                    return
+                # if len(self.network.graph.edges) != len(self.actor_graph.edges):
+                #     warn("The number of throat actors does not match the number of edges in the pore network graph. "
+                #          "You should regenerate the geometry")
+                #     return
 
                 for n1, n2 in self.actor_graph.edges:
 
