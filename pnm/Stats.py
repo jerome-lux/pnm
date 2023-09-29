@@ -7,8 +7,7 @@ import matplotlib.pyplot as plt
 import scipy.interpolate as interpolate
 
 
-def stats(pn, bins=15, mode='vol', xscale='linear', elements='all', unit="nm", filename=None, show=True):
-
+def stats(pn, bins=15, mode="vol", xscale="linear", elements="all", unit="nm", filename=None, show=True):
     """Compute various network statistics either weighted by nulber or by the volume of each element
     pn: pore network model
     mode = 'count' or 'vol'
@@ -34,32 +33,27 @@ def stats(pn, bins=15, mode='vol', xscale='linear', elements='all', unit="nm", f
     # t_vol[i] = pn.graph[n1][n2]['volume']
     # i += 1
 
-    p_radii = np.fromiter(nx.get_node_attributes(
-        pn.graph, 'radius').values(), dtype=np.float)
-    t_radii = np.fromiter(nx.get_edge_attributes(
-        pn.graph, 'radius').values(), dtype=np.float)
-    p_vol = np.fromiter(nx.get_node_attributes(
-        pn.graph, 'volume').values(), dtype=np.float)
-    t_vol = np.fromiter(nx.get_edge_attributes(
-        pn.graph, 'volume').values(), dtype=np.float)
+    p_radii = np.fromiter(nx.get_node_attributes(pn.graph, "radius").values(), dtype=float)
+    t_radii = np.fromiter(nx.get_edge_attributes(pn.graph, "radius").values(), dtype=float)
+    p_vol = np.fromiter(nx.get_node_attributes(pn.graph, "volume").values(), dtype=float)
+    t_vol = np.fromiter(nx.get_edge_attributes(pn.graph, "volume").values(), dtype=float)
 
     minr = min(p_radii.min(), t_radii.min())
     maxr = max(p_radii.max(), t_radii.max())
 
-    if xscale == 'log':
-
+    if xscale == "log":
         try:
             _ = iter(bins)
         except TypeError:
-            #exp_min = int(np.floor(np.log10(np.abs(minr))))
-            #exp_max = int(np.floor(np.log10(np.abs(maxr))))
+            # exp_min = int(np.floor(np.log10(np.abs(minr))))
+            # exp_max = int(np.floor(np.log10(np.abs(maxr))))
             exp_min = np.log10(np.abs(minr))
             exp_max = np.log10(np.abs(maxr))
             bins = list(np.logspace(exp_min, exp_max, bins))
 
-        plt.xscale('log')
+        plt.xscale("log")
 
-    elif xscale == 'linear':
+    elif xscale == "linear":
         try:
             _ = iter(bins)
         except TypeError:
@@ -70,63 +64,54 @@ def stats(pn, bins=15, mode='vol', xscale='linear', elements='all', unit="nm", f
 
     data = None
 
-    if mode == 'vol':
-        data = np.zeros(len(bins)-1)
+    if mode == "vol":
+        data = np.zeros(len(bins) - 1)
         # data2 = np.zeros(len(bins)-1)
-        for i in range(len(bins)-1):
-            if elements == 'all':
+        for i in range(len(bins) - 1):
+            if elements == "all":
                 if i == 0:
-                    data[i] = np.where((p_radii >= bins[i]) & (
-                        p_radii <= bins[i+1]), p_vol, 0).sum()
-                    data[i] += np.where((t_radii >= bins[i])
-                                        & (t_radii <= bins[i+1]), t_vol, 0).sum()
+                    data[i] = np.where((p_radii >= bins[i]) & (p_radii <= bins[i + 1]), p_vol, 0).sum()
+                    data[i] += np.where((t_radii >= bins[i]) & (t_radii <= bins[i + 1]), t_vol, 0).sum()
                 else:
-                    data[i] = np.where((p_radii > bins[i]) & (
-                        p_radii <= bins[i+1]), p_vol, 0).sum()
-                    data[i] += np.where((t_radii > bins[i]) &
-                                        (t_radii <= bins[i+1]), t_vol, 0).sum()
+                    data[i] = np.where((p_radii > bins[i]) & (p_radii <= bins[i + 1]), p_vol, 0).sum()
+                    data[i] += np.where((t_radii > bins[i]) & (t_radii <= bins[i + 1]), t_vol, 0).sum()
 
-            elif elements == 'pores':
+            elif elements == "pores":
                 # for n in pn.graph.nodes:
                 # if pn.graph.nodes[n]['radius']>bins[i] and pn.graph.nodes[n]['radius']<=bins[i+1]:
                 # data2[i] += pn.graph.nodes[n]['volume']
                 if i == 0:
-                    data[i] = np.where((p_radii >= bins[i]) & (
-                        p_radii <= bins[i+1]), p_vol, 0).sum()
+                    data[i] = np.where((p_radii >= bins[i]) & (p_radii <= bins[i + 1]), p_vol, 0).sum()
                 else:
-                    data[i] = np.where((p_radii > bins[i]) & (
-                        p_radii <= bins[i+1]), p_vol, 0).sum()
+                    data[i] = np.where((p_radii > bins[i]) & (p_radii <= bins[i + 1]), p_vol, 0).sum()
 
-            elif elements == 'throats':
+            elif elements == "throats":
                 # for n1,n2 in pn.graph.edges:
                 # if pn.graph[n1][n2]['radius']>bins[i] and pn.graph[n1][n2]['radius']<=bins[i+1]:
                 # data2[i] += pn.graph[n1][n2]['volume']
                 if i == 0:
-                    data[i] = np.where((t_radii >= bins[i]) & (
-                        t_radii <= bins[i+1]), t_vol, 0).sum()
+                    data[i] = np.where((t_radii >= bins[i]) & (t_radii <= bins[i + 1]), t_vol, 0).sum()
                 else:
-                    data[i] = np.where((t_radii > bins[i]) & (
-                        t_radii <= bins[i+1]), t_vol, 0).sum()
+                    data[i] = np.where((t_radii > bins[i]) & (t_radii <= bins[i + 1]), t_vol, 0).sum()
 
         data /= data.sum()
 
-    elif mode == 'count':
-        if elements == 'all':
-            data, _ = np.histogram(
-                np.hstack((p_radii, t_radii)), bins=bins, density=False)
-        elif elements == 'pores':
+    elif mode == "count":
+        if elements == "all":
+            data, _ = np.histogram(np.hstack((p_radii, t_radii)), bins=bins, density=False)
+        elif elements == "pores":
             data, _ = np.histogram(p_radii, bins=bins, density=False)
-        elif elements == 'throats':
+        elif elements == "throats":
             data, _ = np.histogram(t_radii, bins=bins, density=False)
 
         data = np.array(data)
         # print(data)
 
-        if elements == 'all':
+        if elements == "all":
             data = data / (p_radii.size + t_radii.size)
-        elif elements == 'pores':
+        elif elements == "pores":
             data = data / p_radii.size
-        elif elements == 'throats':
+        elif elements == "throats":
             data = data / t_radii.size
     else:
         warn("mode should be either 'vol' or 'number'")
@@ -141,16 +126,16 @@ def stats(pn, bins=15, mode='vol', xscale='linear', elements='all', unit="nm", f
     else:
         title = "volume fraction"
 
-    if elements == 'all':
-        el = 'Pores and throats'
-    elif elements == 'pores':
-        el = 'Pores'
-    elif elements == 'throats':
-        el = 'Throats'
+    if elements == "all":
+        el = "Pores and throats"
+    elif elements == "pores":
+        el = "Pores"
+    elif elements == "throats":
+        el = "Throats"
 
     plt.ylabel("{} {}".format(el, title))
 
-    plt.xlabel('Pore radius ({})'.format(unit))
+    plt.xlabel("Pore radius ({})".format(unit))
 
     if show:
         plt.show()
@@ -163,23 +148,21 @@ def stats(pn, bins=15, mode='vol', xscale='linear', elements='all', unit="nm", f
     return (bins, data)
 
 
-def distribution(n_samples, name='normal', high=np.inf, low=0, **kwargs):
-
-    names = {'normal': np.random.normal,
-             'uniform': np.random.uniform, 'weibull': np.random.weibull}
+def distribution(n_samples, name="normal", high=np.inf, low=0, **kwargs):
+    names = {"normal": np.random.normal, "uniform": np.random.uniform, "weibull": np.random.weibull}
 
     return np.clip(names[name](**kwargs, size=n_samples), low, high)
 
 
 def inverse_transform_sampling_from_raw_data(data, bins, n_samples=1000, low=0, high=np.inf, **kwargs):
     """Draw samples from a raw distribution
-    data: the raw data distribution (may be not normalized) and bins a list of categories (**in increasing order** !!)"""
+    data: the raw data distribution (may be not normalized) and bins a list of categories (**in increasing order** !!)
+    """
 
-    data = np.array(data, dtype=np.float64)
+    data = np.array(data, dtype=float)
     prob = data / data.sum()
-    cum_prob = np.cumsum(prob, dtype=np.float64)
-    inv_cdf = interpolate.interp1d(
-        cum_prob, bins, bounds_error=None, fill_value='extrapolate')
+    cum_prob = np.cumsum(prob, dtype=float)
+    inv_cdf = interpolate.interp1d(cum_prob, bins, bounds_error=None, fill_value="extrapolate")
     # return (bins[np.where(cum_prob > r)[0].min()] for r in np.random.rand(n_samples))
     return np.clip(inv_cdf(np.random.random(n_samples)), a_min=low, a_max=high)
 
@@ -187,6 +170,5 @@ def inverse_transform_sampling_from_raw_data(data, bins, n_samples=1000, low=0, 
 def inverse_transform_sampling_from_cdf(cdf, bins, n_samples=1000, low=0, high=np.inf, **kwargs):
     """cdf is the cumulative density function. bins and cdf must have the same length"""
 
-    inv_cdf = interpolate.interp1d(
-        cdf, bins, bounds_error=None, fill_value='extrapolate')
+    inv_cdf = interpolate.interp1d(cdf, bins, bounds_error=None, fill_value="extrapolate")
     return np.clip(inv_cdf(np.random.random(n_samples)), a_min=low, a_max=high)
