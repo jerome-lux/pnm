@@ -147,7 +147,7 @@ class molecular_diffusion:
             adjm1[:, dirichlet_nodes] = 0
             brows, bcols = adjm1.nonzero()
             bcij = np.array([self._flow_coef(i, j) * self.bc_dict[i]["value"] for (i, j) in zip(brows, bcols)])
-            T = sp.coo_matrix((bcij, (brows, bcols)), shape=(n, n), dtype=np.float64).tocsr()
+            T = sp.coo_matrix((bcij, (brows, bcols)), shape=(n, n), dtype=float).tocsr()
 
             for i in dirichlet_nodes:
                 a = T.getrow(i).toarray()
@@ -172,7 +172,7 @@ class molecular_diffusion:
         all_rows = np.concatenate((diag, cols, dirichlet_nodes))
         all_cols = np.concatenate((diag, rows, dirichlet_nodes))
 
-        self.A = sp.coo_matrix((data, (all_rows, all_cols)), shape=(n, n), dtype=np.float64).tocsr()
+        self.A = sp.coo_matrix((data, (all_rows, all_cols)), shape=(n, n), dtype=float).tocsr()
 
     def _flow_coef(self, n1, n2):
         return self.diffusivity(n1, n2) * np.pi * self.radius(n1, n2) ** 2 / self.pn.get_pore_distance(n1, n2)
@@ -390,7 +390,7 @@ class molecular_diffusion_deprecated:
             data.append(diag)
             self.b[i] = btemp
 
-        self.A = sp.coo_matrix((data, (rows, cols)), shape=(nnodes, nnodes), dtype=np.float64).tocsr()
+        self.A = sp.coo_matrix((data, (rows, cols)), shape=(nnodes, nnodes), dtype=float).tocsr()
 
     def _flow_coef(self, n1, n2):
         return self.diffusivity(n1, n2) * np.pi * self.radius(n1, n2) ** 2 / self.pn.get_pore_distance(n1, n2)

@@ -212,7 +212,22 @@ def cubic_PNM_no_throats(extent, shape, distributions_props, lattice="c", mindis
     return net
 
 
-def random_PNM(npores, extent, porosity, rdist, sratio=1, PRTRR=1, minc=3, maxc=100, BCgridsize=100, fit_box=False):
+def random_PNM(
+    npores,
+    extent,
+    porosity,
+    rdist,
+    sratio=1,
+    PRTRR=1,
+    minc=3,
+    maxc=100,
+    BCgridsize=100,
+    fit_box=False,
+    add_periodic=True,
+    periodic_faces=("x", "y"),
+    search_radius_factor=2,
+    min_neighbors_factor=2
+):
     """Generate a random packing of pores following the given radius distribution rdist with a target porosity "porosity"
     Initial box extent are given, but can be modified dynamically to get the correct porosity
     npores: number of pore
@@ -240,7 +255,31 @@ def random_PNM(npores, extent, porosity, rdist, sratio=1, PRTRR=1, minc=3, maxc=
         fit_box=fit_box,
     )
 
-    pnm.add_throats_by_surf(pn, ratio=sratio, PRTRR=PRTRR, minc=minc, maxc=maxc, sort_by_radius=False, border_correction=True)
+    pnm.add_throats_by_surf(
+        pn,
+        ratio=sratio,
+        PRTRR=PRTRR,
+        minc=minc,
+        maxc=maxc,
+        sort_by_radius=False,
+        border_correction=True,
+        search_radius_factor=search_radius_factor,
+        min_neighbors_factor=min_neighbors_factor
+    )
+
+    if add_periodic:
+        pnm.add_periodic_throats(
+            pn,
+            delta=0.01,
+            faces=periodic_faces,
+            ratio=sratio,
+            PRTRR=PRTRR,
+            minc=minc,
+            maxc=maxc,
+            search_radius_factor=search_radius_factor,
+            min_neighbors_factor=min_neighbors_factor
+        )
+
     pn.compute_geometry(autothroats=False)
 
     return pn
@@ -576,7 +615,7 @@ def random_packing_opt(
                 distance = np.inf
 
             if distance > r + gap:
-                occupied_centers.append(list(coords)) # Convert to list to be serializable when saving the network
+                occupied_centers.append(list(coords))  # Convert to list to be serializable when saving the network
                 occupied_radii.append(r)
                 # occupied_categories.append(category)
                 void_volume += np.pi * (4 / 3) * r**3
@@ -611,6 +650,7 @@ def random_packing_opt(
     net.graph.add_nodes_from(labels)
     nx.set_node_attributes(net.graph, dict(zip(labels, occupied_centers)), "center")
     nx.set_node_attributes(net.graph, dict(zip(labels, occupied_radii)), "radius")
+    nx.set_node_attributes(net.graph, False, "periodic")
     # nx.set_node_attributes(net.graph,dict(zip(labels,occupied_categories)),'category')
 
     pnm.SetFaceBCnodes(net, BCstep)

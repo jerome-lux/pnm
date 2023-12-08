@@ -110,7 +110,7 @@ def nearest_neighbor(c0, centers):
 
 
 # 'float64(float64[:],float64[:,:],float64[:])',
-@jit('float64(float64[:],float64[:,:],float64[:])', nopython=True, fastmath=True, parallel=True, nogil=True)
+@jit('float64(float64[:],float64[:,:],float64[:])', nopython=True, fastmath=True, nogil=True)
 def query_mindist_loops(c0, centers, radii):
 
     """Retourne la distance min entre la coord c0 et N autres points
@@ -153,7 +153,7 @@ def generate_radii(distributions_props, nbnodes):
 
     for props, probs in distributions_props:
         distgenerator = props.get("func", distribution)
-        r = list(distgenerator(n_samples=int(np.ceil(probs*nbnodes)), **props))
+        r = list(distgenerator(n_samples=int(np.ceil(probs * nbnodes)), **props))
         radii.extend(r)
 
     return np.array(radii)[0:nbnodes]

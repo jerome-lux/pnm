@@ -584,18 +584,17 @@ class pore_network:
                 np.array(self.graph.graph["extent"])
             )
 
-    def add_pore(self, radius, center, category=set(), **kwargs):
+    def add_pore(self, radius, center, category=set(), periodic=False, **kwargs):
         n = self.graph.number_of_nodes()
 
         while self.graph.has_node(n):
             n += 1
 
         self.graph.add_node(
-            n, radius=radius, center=center, volume=4 * np.pi * radius**3 / 3, category=category, **kwargs
+            n, radius=radius, center=center, volume=4 * np.pi * radius**3 / 3, category=category, periodic=periodic, **kwargs
         )
 
-    def add_throat(self, n1, n2, radius=None, length=None, periodic=False, **kwargs):
-        # TODO either remove update porosity or compute throat volume
+    def add_throat(self, n1, n2, radius=None, length=None, periodic=False, pdir="none", **kwargs):
 
         if self.graph.has_node(n1) and self.graph.has_node(n2):
             if radius is None:
@@ -603,10 +602,11 @@ class pore_network:
             if length is None:
                 length = self._compute_auto_throat_length(n1, n2)
 
-            self.graph.add_edge(n1, n2, radius=radius, length=length, periodic=periodic, **kwargs)
+            self.graph.add_edge(n1, n2, radius=radius, length=length, periodic=periodic, pdir=pdir, **kwargs)
+            nx.set_node_attributes(self.graph, dict(zip([n1, n2], [periodic, periodic])), "periodic")
 
         else:
-            warn("Cannot create throats between {} and {}: nodes does not exist".format(n1, n2))
+            warn("Cannot create throats between {} and {}: nodes do not exist".format(n1, n2))
 
     def remove_throat(self, n1, n2):
         try:
@@ -702,7 +702,7 @@ class pore_network:
         \n nodes: a list of nodes to limit the search to
         Category: list of pores labels"""
 
-        if not isinstance(category, list):
+        if not (type(category) is list or type(category) is tuple):
             category = [category]
 
         category = set(category)
@@ -713,13 +713,13 @@ class pore_network:
             pores = list(nx.get_node_attributes(self.graph, "category").items())
 
         if mode == "match_one":
-            return [k for k, v in pores if len(v.intersection(category)) > 0]
+            return [k for k, v in pores if len(set(v).intersection(category)) > 0]
         elif mode == "match_all":
             return [k for k, v in pores if category.issubset(v) > 0]
         elif mode == "not_in":
-            return [k for k, v in pores if len(v.intersection(category)) == 0]
+            return [k for k, v in pores if len(set(v).intersection(category)) == 0]
         if mode == "equal":
-            return [k for k, v in pores if category == v]
+            return [k for k, v in pores if category == set(v)]
 
         # val = nx.get_node_attributes(self.graph,'category')
         # return filter(lambda n: category in val[n], self.graph.nodes)

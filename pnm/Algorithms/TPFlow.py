@@ -174,7 +174,7 @@ class TPFlow():
             zip(self.outlet_pores, 'outlet')), 'boundary')
 
         # Pore Saturation is stored in array, while throat sw is stored directly in graph
-        self.swp = np.zeros(self.pn.graph.number_of_nodes(), dtype=np.float64)
+        self.swp = np.zeros(self.pn.graph.number_of_nodes(), dtype=float)
         # Set pore saturation to 1 in inlet
         self.swp[self.inlet_pores] = 1
 
@@ -184,7 +184,7 @@ class TPFlow():
 
         # pressure in pore (either pw if sw=1 or pnw otherwise)
         self.p = np.zeros(self.pn.graph.number_of_nodes(),
-                          dtype=np.float64) + self.p0
+                          dtype=float) + self.p0
 
         # De quel côté est le fluide mouillant entre deux pores i et j: -1 = pas d'interface
         nx.set_edge_attributes(self.pn.graph, -1, 'wf_side')
@@ -287,7 +287,7 @@ class TPFlow():
         pcij = np.array([-self._get_coef(i, j)*self.get_pc(i, j)
                          for i, j in zip(rows, cols)])
         PCIJ = sp.coo_matrix((pcij, (rows, cols)), shape=(
-            n, n), dtype=np.float64).tocsr()
+            n, n), dtype=float).tocsr()
 
         for i in self.pn.graph.nodes:
             a = PCIJ.getrow(i).toarray()
@@ -325,7 +325,7 @@ class TPFlow():
             bcij = np.array([self._get_coef(i, j)*self.bc_dict[i]['value']
                              for (i, j) in zip(brows, bcols)])
             T = sp.coo_matrix((bcij, (brows, bcols)), shape=(
-                n, n), dtype=np.float64).tocsr()
+                n, n), dtype=float).tocsr()
 
             for i in dirichlet_nodes:
                 a = T.getrow(i).toarray()
@@ -353,7 +353,7 @@ class TPFlow():
         all_cols = np.concatenate((diag, rows, dirichlet_nodes))
 
         self.A = sp.coo_matrix((data, (all_rows, all_cols)), shape=(
-            n, n), dtype=np.float64).tocsr()
+            n, n), dtype=float).tocsr()
 
     def setup_throat_radius_model(self, model='throat', alpha=1):
         """model is either throat or effective
