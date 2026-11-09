@@ -184,12 +184,41 @@ def connect_pores(pn, nbunch1, nbunch2):
 
 
 def add_throats(net, lowc=0, highc=np.inf, minc=0, maxc=np.inf, mode="auto", sort_by_radius=True, spacing="auto"):
-    """Set throats between nth-nearest pore neighbors
-    \n lowc: min target connectivity
-    \n highc: max connectivity
-    \n minc: min enforced connectivity
-    \n if mode='auto', lowc and highc are scaled by the pore radius
-    \n Note that it is assumed that there are no throats in the provided network"""
+    """Set throats between n-th nearest pore neighbors.
+
+    Connects pores to their nearest neighbors up to a target connectivity.
+    Pores are processed from largest to smallest radius. In "auto" mode,
+    lowc and highc are scaled by the pore radius relative to spacing.
+
+    Parameters
+    ----------
+    net : pore_network
+        The pore network model instance (must have pores with radius and center set).
+        It is assumed that there are no existing throats in the network.
+    lowc : int, optional
+        Minimum target connectivity per pore. Default is 0.
+    highc : int or float, optional
+        Maximum connectivity per pore. Default is np.inf.
+    minc : int, optional
+        Minimum enforced connectivity per pore. Default is 0.
+    maxc : int or float, optional
+        Maximum enforced connectivity per pore. Default is np.inf.
+    mode : str, optional
+        Either "auto" (scale lowc/highc by pore radius/spacing) or any other
+        value (use fixed lowc/highc). Default is "auto".
+    sort_by_radius : bool, optional
+        If True, neighbors are sorted by radius instead of distance, favoring
+        connections between large pores. Default is True.
+    spacing : str or float, optional
+        Characteristic spacing for "auto" mode scaling. If "auto", uses
+        net.graph.graph["spacing"].min() if available, otherwise the mean pore
+        radius. Default is "auto".
+
+    Notes
+    -----
+    Edge attribute ``radius`` is set to min(r(n1), r(n2)) on each new throat.
+    Throat length is NOT set here (use pore_network.set_auto_throats_length).
+    """
 
     if highc > maxc:
         highc = maxc
@@ -208,30 +237,22 @@ def add_throats(net, lowc=0, highc=np.inf, minc=0, maxc=np.inf, mode="auto", sor
 
     max_pore_radius = pores_radii.max()
 
-    # Pour ne traiter que les pores de rayon > rlimit
-    # i = np.argmax(pores_radii<rmax)
-    # j = np.argmin(pores_radii>rmin)
-    # if i>0:
-    # pores_radii = pores_radii[i:j]
-    # nodelist = nodelist[i:j]
-
     if spacing == "auto":
         try:
             spacing = net.graph.graph["spacing"].min()
         except KeyError:
-            # Moyenne arithmétique des rayons de pore
+            # Arithmetic mean of pore radii
             spacing = pores_radii.sum() / pores_radii.size
 
     if len(nodelist) <= 0:
         return
     centers = nx.get_node_attributes(net.graph, "center")
     centers = np.array([np.array(centers[i]) for i in nodelist])
-    # kdtree = cKDTree(centers)
     kdtree = KDTree(centers, leaf_size=40)
 
-    # candidates = [n for n in nodelist if net.graph.degree(n)<minc]
+    # Pores with degree < minc need additional connections
     candidates = [(n, net.graph.nodes[n]["radius"]) for n in nodelist if net.graph.degree(n) < minc]
-    # On traite les plus gros pores en premier
+    # Process larger pores first
     candidates.sort(key=lambda t: t[1], reverse=True)
     candidates = [t[0] for t in candidates]
 
@@ -244,14 +265,14 @@ def add_throats(net, lowc=0, highc=np.inf, minc=0, maxc=np.inf, mode="auto", sor
             high2 = highc
             low2 = lowc
 
-        # indices = kdtree.query_ball_point(net.graph.nodes[n1]['center'],(max_pore_radius + net.graph.nodes[n1]['radius']) * 1.5)
+        # Search for neighbors within (max_pore_radius + r1) * 1.5
         indices, distances = kdtree.query_radius(
             [net.graph.nodes[n1]["center"]],
             (max_pore_radius + net.graph.nodes[n1]["radius"]) * 1.5,
             return_distance=True,
         )
         if len(indices[0]) < low2 * 2:
-            # _, indices =  kdtree.query(x=net.graph.nodes[n1]['center'],k=high2*2,n_jobs=1)  #sinon, on cherche les n premiers voisins
+            # Otherwise, take the high2*2 nearest neighbors
             distances, indices = kdtree.query(
                 [net.graph.nodes[n1]["center"]], k=min(high2 * 2, len(nodelist)), return_distance=True
             )
@@ -262,16 +283,15 @@ def add_throats(net, lowc=0, highc=np.inf, minc=0, maxc=np.inf, mode="auto", sor
         if degree <= 0 or len(indices) <= 0:
             continue
 
-        # On cherche les pores les plus proches (i.e. la distance entre les deux surfaces la plus faible !)
+        # Convert center-to-center distance to surface-to-surface distance
         distances = distances[0] - pores_radii[indices] - net.graph.nodes[n1]["radius"]
-        # distances -= net.graph.nodes[n1]['radius']
         dist_and_labels = [(distances[j], k) for j, k in enumerate(indices)]
         dist_and_labels.sort(key=lambda t: t[0])
-        # On ne garde que les high2*2 premiers pores
+        # Keep only the high2*2 nearest pores
         dist_and_labels = dist_and_labels[: min(high2 * 2, len(dist_and_labels))]
         dist_and_labels = [(dist, pores_radii[k], k) for dist, k in dist_and_labels]
 
-        if sort_by_radius:  # On tri par taille de pore pour favoriser les connections entre "gros" pores
+        if sort_by_radius:  # Sort by pore size to favor connections between large pores
             dist_and_labels.sort(key=lambda t: t[1], reverse=True)
         nthroats = 0
 
@@ -299,15 +319,13 @@ def add_throats(net, lowc=0, highc=np.inf, minc=0, maxc=np.inf, mode="auto", sor
                         n1, n2, radius=min(net.graph.nodes[n1]["radius"], net.graph.nodes[n2]["radius"])
                     )
 
-        # Si la connectivité est toujours < minc, on ajoute un capillaire même si cela implique un dépassement de la connectivité max pour le pore voisin
+        # If connectivity is still < minc, add a capillary even if it exceeds
+        # the max connectivity of the neighbor
         if net.graph.degree(n1) < minc:
-            # On traite ici uniquement les voisins proches
+            # Consider only close neighbors
             indices = kdtree.query(
                 [net.graph.nodes[n1]["center"]], k=min(high2 * 2, len(nodelist)), return_distance=False
             )
-            # _,indices = kdtree.query(x=net.graph.nodes[n1]['center'],k=high2*2,n_jobs=1)
-            # neighbors = [(net.graph.degree(nodelist[n]),n) for n in indices if nodelist[n] != n1]
-            # neighbors.sort(key=lambda t:t[0])
 
             neighbors = [
                 (net.graph.nodes[nodelist[n]]["radius"], n)
@@ -327,7 +345,6 @@ def add_periodic_throats(
     net,
     delta=0.01,
     faces=("x", "y", "z"),
-    ratio=0.75,
     PRTRR=2,
     minc=0,
     maxc=np.inf,
@@ -351,7 +368,7 @@ def add_periodic_throats(
     # TODO: revoir coorected_ratio
     def corrected_ratio(n, face_id):
         innercat = set(["inner", "none"])
-        k = len(set(net[n]["category"]) - innercat) # x+, y+, z+ etc. : attention pour les érseaux 2D on peut avoir un pore z+ ET z- ce qui est 1 pb pour la suite...
+        k = len(set(net[n]["category"]) - innercat) # x+, y+, z+ etc. : attention pour les réseaux 2D on peut avoir un pore z+ ET z- ce qui est 1 pb pour la suite...
         if len(innercat.intersection(net[n]["category"])) > 0:
             return 1
         else:
@@ -464,10 +481,12 @@ def add_periodic_throats(
                         S12 = np.pi * r12**2
                         S1 = net.graph.nodes[n1]["exchange_area"] + S12
                         S2 = net.graph.nodes[n2]["exchange_area"] + S12
+                        sr1 = net.graph.nodes[n1]["surface_ratio"]
+                        sr2 = net.graph.nodes[n2]["surface_ratio"]
 
                         if (
-                            S1 <= corrected_ratio(n1, face_id) * S1max * ratio
-                            and S2 <= corrected_ratio(n2, face_id) * S2max * ratio
+                            S1 <= corrected_ratio(n1, face_id) * S1max * sr1
+                            and S2 <= corrected_ratio(n2, face_id) * S2max * sr2
                         ):
                             vtemp = centers[i][counter] - centers[opposed_face_index][j]
                             net.add_throat(
@@ -487,7 +506,7 @@ def add_periodic_throats(
                         # else:
                         #     continue
 
-                        elif S1 > corrected_ratio(n1, face_id) * ratio * S1max and net.graph.degree(n1) >= minc:
+                        elif S1 > corrected_ratio(n1, face_id) * sr1 * S1max and net.graph.degree(n1) >= minc:
                             break
 
         print(f"Creating {PP_counter} periodic links between face {face}- and face {face}+")
@@ -504,25 +523,59 @@ def add_throats_by_surf(
     border_correction=True,
     search_radius_factor=3,
     min_neighbors_factor=3,
-    ratio_sigma=0.05
+
 ):
-    """Set throats between nearest pore neighbors such that the  pore surface / connected throat section surface <= ratio
-    nodes: list of nodes to process, if None, all nodes will be processed
-    periodic: if True adds throats between opposit faces
-    ratio: pore area over total area of the connected throats. If ratio is a 2-tuple it indicates lowst and highest ratio, which is chosen randomly for each pore
-    PRTRR: pore radius to throat radius ratio
-    minc: min connectiviy
-    maxc: max connectivity
-    sort_by_radius: bool (default False). If True, neighbors are sorted by radius and not by distance [not recommended]
-    border_correction: bool (default True). Reduce connecivity (i.e. ratio) of pores at the boundaries [recommended]
-    search_radius_factor: at first, we only search neighbors within a ball of radius R*search_radius_factor. Should be adjusted depending on the porosity
+    # TODO: allow PRTRR distribution
+    """Set throats between nearest pore neighbors such that pore surface coverage stays below a ratio.
+
+    Throats are added iteratively between pores, prioritizing larger pores first.
+    The pore surface covered by connected throats is limited so that
+    sum(throat_sections) / pore_surface <= ratio * corrected_ratio.
+
+    Two passes are performed:
+      - Pass 0: connect up to minc nearest neighbors per pore.
+      - Pass 1: connect additional neighbors within search_radius_factor * pore radius.
+
+    Parameters
+    ----------
+    net : pore_network
+        The pore network model instance (must have pores with radius and center set).
+    nodes : iterable of int or None, optional
+        List of node indices to process. If None, all nodes are processed.
+    ratio : float or tuple of float, optional
+        Maximum fraction of pore surface covered by throats (default 0.75).
+        If a 4-tuple (loc, low, high, sigma), the ratio is drawn from a truncated
+        normal distribution with these parameters. Default is 0.75.
+    PRTRR : float, optional
+        Pore radius to throat radius ratio. Throat radius = min(r1, r2) / PRTRR.
+        Default is 2.
+    minc : int, optional
+        Minimum enforced connectivity per pore. Default is 0.
+    maxc : int, optional
+        Maximum connectivity per pore. Default is 100.
+    sort_by_radius : bool, optional
+        If True, neighbors are sorted by radius instead of distance (pass 0 only).
+        Default is False.
+    border_correction : bool, optional
+        If True, reduce the allowed surface coverage for boundary pores
+        (50% per adjacent face). Default is True.
+    search_radius_factor : float, optional
+        In pass 1, only neighbors within R * search_radius_factor are considered.
+        Default is 3.
+    min_neighbors_factor : int, optional
+        Factor applied to minc when searching for neighbors (pass 0).
+        Default is 3.
+
+    Notes
+    -----
+    Node attributes ``exchange_area`` and ``surface_ratio`` are set/updated by this function.
+    Edge attribute ``radius`` is set on each new throat.
     """
 
     if maxc < minc:
         maxc = minc + 1
 
     nodelist = list(net.graph.nodes)
-
 
     if len(nodelist) <= 0:
         return
@@ -546,20 +599,32 @@ def add_throats_by_surf(
     candidates.sort(key=lambda t: t[1], reverse=True)
     candidates = [t[0] for t in candidates]
 
+    # If ratio is a list, then the max pore surface covered by throat is defined as a random distribution
     try:
-        loc, low, high = ratio
-        surface_ratio = distribution(net.graph.number_of_nodes, high, low, **{'loc':loc, 'scale':ratio_sigma})
-    except TypeError as te:
-        surface_ratio = np.zeros(net.graph.number_of_nodes) + ratio
+        loc, low, high, sigma = ratio
+        surface_ratio = distribution(
+            net.graph.number_of_nodes(),
+            name="normal",
+            high=high,
+            low=low,
+            loc=loc,
+            scale=sigma,
+        )
+    except (TypeError, ValueError):
+        surface_ratio = np.zeros(net.graph.number_of_nodes()) + ratio
+
+    # Map surface_ratio values to actual node labels (nodes may not be 0..N-1)
+    surface_ratio_dict = dict(zip(nodelist, surface_ratio))
+    nx.set_node_attributes(net.graph, surface_ratio_dict, name="surface_ratio")
 
     if border_correction:
-        # Reduit le nombre de capillaires au niveau des pores de surface
+        # Reduce the number of capillaries at boundary pores
         def corrected_ratio(n):
             innercat = set(["inner", "none"])
             if len(innercat.intersection(net[n]["category"])) > 0:
                 return 1.0
             else:
-                # on réduit de 50% par face adjacente (i.e. 50% pour une face, 25% pour une arrête et 12.5% pour un sommet)
+                # Reduce by 50% per adjacent face (50% for one face, 25% for an edge, 12.5% for a corner)
                 return 0.5 ** len(set(net[n]["category"]) - innercat)
 
     else:
@@ -571,11 +636,12 @@ def add_throats_by_surf(
     # nombre de passes. Lors de la première on ne connecte que les minc premiers voisins
     niter = 2
     climit = [minc, maxc]
+    counter = -1
     for n in range(niter):
         for counter, n1 in enumerate(candidates):
             print(f"Iteration {n:d}:  {100 * (counter + 1) / len(candidates):5.2f}% completed  ", end="\r")
 
-            if net.graph.degree(n1) >= max(2, climit[n] * corrected_ratio(n1)):
+            if net.graph.degree(n1) >= max(1, climit[n] * corrected_ratio(n1)):
                 continue
 
             r1 = net.graph.nodes[n1]["radius"]
@@ -584,11 +650,11 @@ def add_throats_by_surf(
             if net.graph.nodes[n1]["exchange_area"] >= S1max:
                 continue
 
-            # the query_radius() and query() methods return (ind, dist) and (dist, ind) respectively...
-            # 1ère passe: on essyae de connecter minc capillaires. On parcours les min_neighbors_factor * minc 1ers voisins
-            # 2ème passe: on connecte les autres pores dans un distant de moins de R * search_radius_factor
-            # Note: lors de la recherche des pores voisins, le kdtree retourne la distance entre les centres et non les surfaces des pores
-            # On doit donc "ratisser" large et ensuite trier et filtrer les résultats dans un second temps
+            # query_radius() returns (indices, distances), query() returns (distances, indices).
+            # Pass 0: try to connect minc capillaries. Iterate over min_neighbors_factor * minc nearest neighbors.
+            # Pass 1: connect other pores within R * search_radius_factor.
+            # Note: KDTree returns center-to-center distance, not surface-to-surface distance.
+            # We must cast wide and then sort/filter results afterwards.
             if n == 0:
                 distances, indices = kdtree.query(
                     [net.graph.nodes[n1]["center"]],
@@ -604,14 +670,14 @@ def add_throats_by_surf(
 
             indices = indices[0]
 
-            # On cherche les pores les plus proches (i.e. la distance entre les deux surfaces la plus faible !)
+            # Search for nearest pores (i.e. smallest surface-to-surface distance)
             distances = distances[0] - pores_radii[indices] - net.graph.nodes[n1]["radius"]
             dist_and_labels = [(distances[j], k) for j, k in enumerate(indices)]
             dist_and_labels.sort(key=lambda t: t[0])
             dist_and_labels = [(dist, pores_radii[k], k) for dist, k in dist_and_labels]
 
             if n > 0:
-                # contrainte de distance basée sur le rayon du pore
+                # Distance constraint based on pore radius
                 temp_dist_and_labels = [
                     (dist, r, k) for dist, r, k in dist_and_labels if dist < r1 * search_radius_factor
                 ]
@@ -619,7 +685,7 @@ def add_throats_by_surf(
                     dist_and_labels = dist_and_labels[: min(min_neighbors_factor * minc, len(dist_and_labels))]
 
 
-            if sort_by_radius:  # On tri par taille de pore pour favoriser les connections entre "gros" pores
+            if sort_by_radius and n == 0:  # Sort by pore size to favor connections between large pores (pass 0 only)
                 dist_and_labels.sort(key=lambda t: t[1], reverse=True)
 
             for dist, r2, j in dist_and_labels:
@@ -633,7 +699,7 @@ def add_throats_by_surf(
                             )
                         )
 
-                    # On arrete si la connectivité dépasse la limite
+                    # Stop if connectivity limit is exceeded
                     if (
                         net.graph.degree(n1) >= max(1, climit[n] * corrected_ratio(n1))
                         or net.graph.degree(n2)  >= max(1, climit[n] * corrected_ratio(n2))
@@ -647,7 +713,7 @@ def add_throats_by_surf(
                     S2 = net.graph.nodes[n2]["exchange_area"] + S12
                     S2max = 4 * np.pi * r2**2
 
-                    if S1 <= corrected_ratio(n1) * surface_ratio[n1] * S1max and S2 <= corrected_ratio(n2) * surface_ratio[n2] * S2max:
+                    if S1 <= corrected_ratio(n1) * surface_ratio_dict[n1] * S1max and S2 <= corrected_ratio(n2) * surface_ratio_dict[n2] * S2max:
                         net.add_throat(n1, n2, radius=r12)
                         net.graph.nodes[n1]["exchange_area"] += S12
                         net.graph.nodes[n2]["exchange_area"] += S12
@@ -661,10 +727,10 @@ def add_throats_by_surf(
                     #     else:
                     #         continue
 
-                    elif S1 > corrected_ratio(n1) * surface_ratio[n1] * 4 * np.pi * r1**2 and net.graph.degree(n1) >= minc:
+                    elif S1 > corrected_ratio(n1) * surface_ratio_dict[n1] * 4 * np.pi * r1**2 and net.graph.degree(n1) >= minc:
                         break
 
-            # S'il reste des pores avec une connectivité < minc malgré tout, on force
+            # If some pores still have connectivity < minc, force a connection
             if net.graph.degree(n1) < minc:
                 for dist, r, j in dist_and_labels:
                     n2 = nodelist[j]
@@ -679,13 +745,6 @@ def add_throats_by_surf(
                         net.graph.nodes[n2]["exchange_area"] += S12
                         break
         print(f"Iteration {n:d}:  {100 * (counter + 1) / len(candidates):5.2f}% completed  ")
-
-
-        # print("node", n1,
-        #         net.graph.nodes[n1]["exchange_area"],
-        #         4 * np.pi * r1**2,
-        #         corrected_ratio(n1)* 4 * np.pi * r1**2,
-        #         r1)
 
 
 def scale(net, factor):

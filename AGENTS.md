@@ -86,3 +86,13 @@ Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing 
 
 ### Known issue (pre-existing, partially mitigated)
 - `generate_radii()` no longer breaks when `"func"` is omitted from `distributions_props` (default `distribution()` is used). If `"func"` is present, it is used as the generator and excluded from kwargs.
+
+## Status (Transformation.py - COMPLETED)
+### Bugs fixed in `add_throats_by_surf`:
+1. **`surface_ratio` stored with `enumerate()` indices (0..N-1) as node labels** — broken when node labels are not consecutive (e.g. before `compute_geometry()` relabels). Now uses `dict(zip(nodelist, surface_ratio))` to map to actual node labels.
+2. **`surface_ratio[n1]` used the node label as a numpy array index** — IndexError or wrong values when labels are not 0..N-1. Now uses `surface_ratio_dict[n1]` (proper label-based dict).
+3. **`counter` undefined if `candidates` was empty** — loop never executed, variable undefined at end. Now initialized to `counter = -1` before the loop.
+
+### Docstrings:
+- `add_throats_by_surf` and `add_throats`: complete English docstrings (NumPy style) with Parameters/Returns/Notes sections.
+- French comments translated to English.
