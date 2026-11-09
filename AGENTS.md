@@ -175,11 +175,22 @@ Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing 
 - French comments translated to English.
 - Comment in `bc_values` typo fixed ("aply" → "apply").
 
-## Status (Build configuration - COMPLETED)
-### Renaming:
-- `pnm/Algorithms/InvPerc.py` → `pnm/Algorithms/percolation.py` (git mv)
-- `pnm/__init__.py` import updated from `pnm.Algorithms.InvPerc` to `pnm.Algorithms.percolation`
+## Status (Visualization.py - COMPLETED)
+### Bugs fixed in `Fast3DViewer`:
+1. **`props["periodic"]`, `props["pdir"]`, `props["radius"]`** — KeyError if edge attribute missing. Now uses `.get()` with defaults (False, "x", 0.1).
+2. **`self.network.graph.graph["extent"]`** — KeyError if extent never set. Now uses `.get("extent")` with None guard.
+3. **`cam.SetFocalPoint(...),`** — trailing comma creating useless tuple in `reset_camera()` (both classes). Fixed.
+4. **`self.renWin.AddRenderer(self.renderer)`** in `save()` — renderer already added in `create_renWin()`, double addition. Removed.
+5. **`pn.graph.graph["extent"]`** in `vtk_viewer()` — KeyError if extent not set. Now uses `.get("extent")` with None guard + fallback filename.
+6. **`min(min(pattrval), min(tattrval))`** in `vtk_viewer()` — ValueError if no nodes or edges. Now checks for empty attribute lists.
 
-### Build system:
-- `pyproject.toml` created (PEP 621, replaces setup.py)
-- `setup.py` retained for compatibility
+### Bugs fixed in `PNM_3d_viewer`:
+1. **`props["periodic"]`, `props["pdir"]`** — KeyError in `make_geometry`. Now uses `.get()` with defaults.
+2. **`cam.SetFocalPoint(...),`** — trailing comma in `reset_camera()`. Fixed.
+
+### Docstrings:
+- `Fast3DViewer` and all methods: complete English docstrings (NumPy style).
+- `PNM_3d_viewer` and all methods: complete English docstrings (NumPy style).
+- `create_sphere_glyphs`, `create_tubes`, `create_pore_actor`, `create_throat_actor`: complete English docstrings.
+- `vtk_viewer`: complete English docstring (NumPy style).
+- French comments translated to English.

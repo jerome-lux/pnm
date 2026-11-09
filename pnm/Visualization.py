@@ -7,6 +7,7 @@ import networkx as nx
 from matplotlib.colors import Normalize
 import matplotlib.pyplot as plt
 import pnm
+from copy import deepcopy
 
 
 # TODO : change throats_opacitymap and throats_colormap to something else than list...
@@ -47,25 +48,71 @@ class Fast3DViewer:
         heads = []
         tails = []
         radii = []
+        cmap = []
 
-        for n1, n2, props in self.network.graph.edges.data():
+        extent = self.network.graph.graph.get("extent")
+        if extent is None:
+            warn("Network extent is not set. Periodic throats may not be displayed correctly.")
+
+        for i, (n1, n2, props) in enumerate(self.network.graph.edges.data()):
             c1 = np.array(self.network.graph.nodes[n1]["center"])
             c2 = np.array(self.network.graph.nodes[n2]["center"])
-            radii.append(props["radius"])
 
-            if props["periodic"]:
+            # Trick to visualize periodic throats
+            if props.get("periodic", False):
                 ind = {"x": 0, "y": 1, "z": 2}
-                pdir = props["pdir"]
-                if c1[ind[pdir]] > c2[ind[pdir]]:
-                    c2[ind[pdir]] = self.network.graph.graph["extent"][ind[pdir]] + c2[ind[pdir]]
-                    c2 = 0.5 * (c1 + c2)
-                else:
-                    c1[ind[pdir]] = self.network.graph.graph["extent"][ind[pdir]] + c1[ind[pdir]]
-                    c1 = 0.5 * (c1 + c2)
-            heads.append(c1)
-            tails.append(c2)
+                pdir = props.get("pdir", "x")
 
-        self.throat_actor = create_tubes(heads, tails, radii, colors, resolution=resolution)
+                c1p = deepcopy(c1)
+                c2p = deepcopy(c2)
+                if c1[ind[pdir]] > c2[ind[pdir]]:
+                    if extent is not None:
+                        c2p[ind[pdir]] = extent[ind[pdir]] + c2[ind[pdir]]
+                        c2p = 0.5 * (c1p + c2p)
+                    else:
+                        c2p = 0.5 * (c1p + c2p)
+                else:
+                    if extent is not None:
+                        c1p[ind[pdir]] = extent[ind[pdir]] + c1[ind[pdir]]
+                        c1p = 0.5 * (c1p + c2p)
+                    else:
+                        c1p = 0.5 * (c1p + c2p)
+                heads.append(c1p)
+                tails.append(c2p)
+                radii.extend([props.get("radius", 0.1)] * 2)
+
+                if colors is not None:
+                    cmap.extend([colors[i]] * 2)
+
+                c1p = deepcopy(c1)
+                c2p = deepcopy(c2)
+                if c1[ind[pdir]] < c2[ind[pdir]]:
+                    if extent is not None:
+                        c2p[ind[pdir]] = -extent[ind[pdir]] + c2[ind[pdir]]
+                        c2p = 0.5 * (c1p + c2p)
+                    else:
+                        c2p = 0.5 * (c1p + c2p)
+                else:
+                    if extent is not None:
+                        c1p[ind[pdir]] = -extent[ind[pdir]] + c1[ind[pdir]]
+                        c1p = 0.5 * (c1p + c2p)
+                    else:
+                        c1p = 0.5 * (c1p + c2p)
+                heads.append(c1p)
+                tails.append(c2p)
+                radii.extend([props.get("radius", 0.1)] * 2)
+                if colors is not None:
+                    cmap.extend([colors[i]] * 2)
+
+            else:
+                heads.append(c1)
+                tails.append(c2)
+                radii.extend([props.get("radius", 0.1)] * 2)
+                if colors is not None:
+                    cmap.extend([colors[i]] * 2)
+
+        self.throat_actor = create_tubes(heads, tails, radii, cmap, resolution=resolution)
+
 
 
     def create_renWin(self, size=(800, 1000)):
@@ -79,10 +126,9 @@ class Fast3DViewer:
         self.renWin = None
 
 
-    def render(self, pcmap=None, tcmap=None, resolution=8, azimuth=20, elevation=30, size=(800, 1000)):
+    def render(self, pcmap=None, tcmap=None, resolution=8):
 
         self.reset_renderer()
-        self.create_renWin(size)
 
         if self.pore_actor is None:
             self.create_pores(colors=pcmap, resolution=resolution)
@@ -92,6 +138,9 @@ class Fast3DViewer:
             self.create_throats(colors=tcmap, resolution=resolution)
         self.renderer.AddActor(self.throat_actor)
 
+
+    def interact(self, azimuth=20, elevation=30, size=(800, 1000)):
+        self.create_renWin(size)
         iren = vtk.vtkRenderWindowInteractor()
         self.set_camera(azimuth, elevation)
         self.renWin.OffScreenRenderingOff()
@@ -100,12 +149,12 @@ class Fast3DViewer:
 
         iren.Start()
         del iren
-        self.close_renWin()
+        # self.close_renWin()
 
     def reset_camera(self):
         cam = self.renderer.GetActiveCamera()
         cam.SetPosition(self.camera_props["pos"])
-        cam.SetFocalPoint(self.camera_props["focal"]),
+        cam.SetFocalPoint(self.camera_props["focal"])
         cam.SetViewUp(self.camera_props["viewup"])
 
     def set_camera(self, azimuth, elevation):
@@ -117,19 +166,12 @@ class Fast3DViewer:
 
     def save(self, filename, pcmap=None, tcmap=None, resolution=8, azimuth=20, elevation=30, size=(800, 1000)):
 
+        # For an unknown reason, this does not work after interacting with the scene. Maybe the renWin is not closed correctly after the interaction
+
+        self.render(pcmap=pcmap, tcmap=tcmap, resolution=resolution)
         self.create_renWin(size)
-        # self.reset_camera()
         self.set_camera(azimuth, elevation)
 
-        if self.pore_actor is None:
-            self.create_pores(colors=pcmap, resolution=resolution)
-        self.renderer.AddActor(self.pore_actor)
-
-        if self.throat_actor is None:
-            self.create_throats(colors=tcmap, resolution=resolution)
-        self.renderer.AddActor(self.throat_actor)
-
-        # self.renWin.AddRenderer(self.renderer)
         self.renWin.OffScreenRenderingOn()
         self.renWin.Render()
         # Création du filtre pour écriture de l'image du rendu
@@ -145,6 +187,20 @@ class Fast3DViewer:
 
 
 class PNM_3d_viewer:
+    """Slow 3D viewer for pore networks (one VTK actor per pore and per throat).
+
+    This viewer creates an individual VTK actor for every pore and every throat.
+    It is simple and allows independent configuration of each actor (opacity,
+    color), but it is slow and memory-hungry for large networks.
+    Use :class:`Fast3DViewer` instead for networks with more than a few hundred
+    pores.
+
+    Parameters
+    ----------
+    network : pore_network or None, optional
+        The pore network model instance to visualize. Default is None.
+    """
+
     def __init__(self, network=None):
         self.set_network(network)
 
@@ -152,9 +208,28 @@ class PNM_3d_viewer:
 
     @classmethod
     def fromfile(cls, filename):
+        """Create a PNM_3d_viewer from a saved network file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the network file (GML/GEXF/pickle format).
+
+        Returns
+        -------
+        PNM_3d_viewer
+            A new viewer instance containing the loaded network.
+        """
         return cls(network=pnm.pore_network.read(filename))
 
     def reset_renderer(self, bgcolor=(1, 1, 1)):
+        """Reset the VTK renderer with a given background color.
+
+        Parameters
+        ----------
+        bgcolor : tuple of float, optional
+            RGB background color (values in [0, 1]). Default is (1, 1, 1) (white).
+        """
         self.renderer = vtk.vtkRenderer()
         self.renderer.SetBackground(bgcolor)
         cam = self.renderer.GetActiveCamera()
@@ -163,14 +238,33 @@ class PNM_3d_viewer:
         )
 
     def set_network(self, network):
+        """Set the network to visualize and create an actor graph copy.
+
+        Parameters
+        ----------
+        network : pore_network
+            The pore network model instance.
+        """
         self.network = network
         self.actor_graph = self.network.graph.__class__()
         self.actor_graph.add_nodes_from(self.network.graph)
-        # edges = [(e1, e2) for (e1, e2) in self.network.graph.edges() if not self.network.graph[e1][e2]["periodic"]]
         self.actor_graph.add_edges_from(self.network.graph.edges())
-        # self.actor_graph.add_edges_from(edges)
 
-    def make_geometry(self, render_throats=True,**kwargs):
+    def make_geometry(self, render_throats=True, **kwargs):
+        """Create VTK actors for all pores and throats in the network.
+
+        One actor is created per pore (sphere) and per throat (cylinder).
+        Actors are stored in ``self.actor_graph`` node/edge attributes.
+
+        Parameters
+        ----------
+        render_throats : bool, optional
+            If True, create throat actors. Default is True.
+        **kwargs
+            Additional keyword arguments:
+            - ``pore_resolution`` : sphere mesh resolution (default 8).
+            - ``throat_resolution`` : tube mesh resolution (default 6).
+        """
         pore_resolution = kwargs.get("pore_resolution", 8)
         throat_resolution = kwargs.get("throat_resolution", 6)
 
@@ -181,34 +275,51 @@ class PNM_3d_viewer:
             for n, props in self.network.graph.nodes.data():
                 actor = create_pore_actor(resolution=pore_resolution, **props)
                 self.actor_graph.nodes[n]["actor"] = actor
-                # self.renderer.AddActor(actor)
 
             if render_throats:
                 for n1, n2, props in self.network.graph.edges.data():
                     c1 = np.array(self.network.graph.nodes[n1]["center"])
                     c2 = np.array(self.network.graph.nodes[n2]["center"])
 
-                    if props["periodic"]:
+                    if props.get("periodic", False):
                         ind = {"x": 0, "y": 1, "z": 2}
-                        pdir = props["pdir"]
-                        if c1[ind[pdir]] > c2[ind[pdir]]:
-                            c2[ind[pdir]] = self.network.graph.graph["extent"][ind[pdir]] + c2[ind[pdir]]
-                            c2 = 0.5 * (c1 + c2)
-                        else:
-                            c1[ind[pdir]] = self.network.graph.graph["extent"][ind[pdir]] + c1[ind[pdir]]
-                            c1 = 0.5 * (c1 + c2)
+                        pdir = props.get("pdir", "x")
+                        extent = self.network.graph.graph.get("extent")
+                        if extent is not None:
+                            if c1[ind[pdir]] > c2[ind[pdir]]:
+                                c2[ind[pdir]] = extent[ind[pdir]] + c2[ind[pdir]]
+                                c2 = 0.5 * (c1 + c2)
+                            else:
+                                c1[ind[pdir]] = extent[ind[pdir]] + c1[ind[pdir]]
+                                c1 = 0.5 * (c1 + c2)
 
                     actor = create_throat_actor(c1, c2, resolution=throat_resolution, **props)
                     self.actor_graph[n1][n2]["actor"] = actor
-                    # self.renderer.AddActor(actor)
 
         self.geom_complete = True
 
     def maps_colors(self, **kwargs):
-        """pores_colormap : dict of color to be mapped to the pores, if only one value is provided, this color is applied to all elements
-        pores_opacitymap : dict of opacity values for pores
-        throats_colormap : list of color values for throats
-        throats_opacitymap : list of opacity values for throats
+        """Map colors and opacities to pore and throat actors.
+
+        Parameters
+        ----------
+        **kwargs
+            Additional keyword arguments:
+            - ``pores_colormap`` : dict mapping pore index to RGB color
+              (default: {} -> all pores use DEFAULT_COLOR).
+            - ``pores_opacitymap`` : dict mapping pore index to opacity
+              (default: {} -> all pores use DEFAULT_OPACITY).
+            - ``throats_colormap`` : list of RGB colors for throats, cycled
+              if there are more throats than colors (default: [DEFAULT_COLOR]).
+            - ``throats_opacitymap`` : list of opacity values for throats,
+              cycled if needed (default: [DEFAULT_OPACITY]).
+            - ``render_throats`` : if False, skip throat coloring
+              (default: True).
+
+        Notes
+        -----
+        Requires ``make_geometry`` to have been called first (``geom_complete``
+        must be True).
         """
         from itertools import cycle
 
@@ -241,31 +352,48 @@ class PNM_3d_viewer:
                 data["actor"].GetProperty().SetColor(pores_colormap.get(pore, DEFAULT_COLOR))
 
             if kwargs.get("render_throats", True):
-                # if len(self.network.graph.edges) != len(self.actor_graph.edges):
-                #     warn("The number of throat actors does not match the number of edges in the pore network graph. "
-                #          "You should regenerate the geometry")
-                #     return
-
                 for n1, n2 in self.actor_graph.edges:
                     self.actor_graph[n1][n2]["actor"].GetProperty().SetColor(next(throats_colormap))
                     self.actor_graph[n1][n2]["actor"].GetProperty().SetOpacity(next(throats_opacitymap))
 
     def create_renWin(self, size=(800, 1000)):
+        """Create a VTK render window and add the renderer.
+
+        Parameters
+        ----------
+        size : tuple of int, optional
+            Window size (width, height) in pixels. Default is (800, 1000).
+        """
         if self.geom_complete:
             self.renWin = vtk.vtkRenderWindow()
             self.renWin.AddRenderer(self.renderer)
             self.renWin.SetSize(size)
 
     def close_renWin(self):
-        self.renWin.Finalize()
-        del self.renWin
-        self.renWin = None
+        """Close and delete the render window."""
+        if self.renWin is not None:
+            self.renWin.Finalize()
+            del self.renWin
+            self.renWin = None
 
     def render(self, azimuth=20, elevation=30, size=(800, 1000)):
+        """Render the network interactively.
 
+        Parameters
+        ----------
+        azimuth : float, optional
+            Camera azimuth angle in degrees. Default is 20.
+        elevation : float, optional
+            Camera elevation angle in degrees. Default is 30.
+        size : tuple of int, optional
+            Window size (width, height). Default is (800, 1000).
+
+        Notes
+        -----
+        Returns immediately if geometry has not been built (call ``make_geometry`` first).
+        """
         if not self.geom_complete:
             return
-        # self.reset_camera()
 
         self.reset_renderer()
         self.create_renWin(size)
@@ -287,16 +415,31 @@ class PNM_3d_viewer:
         self.close_renWin()
 
     def save(self, filename, azimuth=20, elevation=30, size=(800, 1000)):
+        """Render the network offscreen and save it as a JPEG image.
+
+        Parameters
+        ----------
+        filename : str
+            Output JPEG file path.
+        azimuth : float, optional
+            Camera azimuth angle. Default is 20.
+        elevation : float, optional
+            Camera elevation angle. Default is 30.
+        size : tuple of int, optional
+            Window size (width, height). Default is (800, 1000).
+
+        Notes
+        -----
+        Returns immediately if geometry has not been built.
+        """
         if not self.geom_complete:
             return
 
         self.create_renWin(size)
-        # self.reset_camera()
         self.set_camera(azimuth, elevation)
-        # self.renWin.AddRenderer(self.renderer)
         self.renWin.OffScreenRenderingOn()
         self.renWin.Render()
-        # Création du filtre pour écriture de l'image du rendu
+        # Create the filter to write the rendered image
         w2i = vtk.vtkWindowToImageFilter()
         writer = vtk.vtkJPEGWriter()
         writer.SetQuality(100)
@@ -308,12 +451,22 @@ class PNM_3d_viewer:
         self.close_renWin()
 
     def reset_camera(self):
+        """Restore the camera to its initial position (saved at reset_renderer time)."""
         cam = self.renderer.GetActiveCamera()
         cam.SetPosition(self.camera_props["pos"])
-        cam.SetFocalPoint(self.camera_props["focal"]),
+        cam.SetFocalPoint(self.camera_props["focal"])
         cam.SetViewUp(self.camera_props["viewup"])
 
     def set_camera(self, azimuth, elevation):
+        """Position the camera with the given azimuth and elevation angles.
+
+        Parameters
+        ----------
+        azimuth : float
+            Camera azimuth angle in degrees.
+        elevation : float
+            Camera elevation angle in degrees.
+        """
         self.renderer.ResetCamera()
         self.renderer.GetActiveCamera().OrthogonalizeViewUp()
         self.renderer.GetActiveCamera().Azimuth(azimuth)
@@ -322,6 +475,29 @@ class PNM_3d_viewer:
 
 
 def create_sphere_glyphs(coord, radii, colors=None, resolution=8):
+    """Create a single VTK actor rendering all pores as spheres using glyphs.
+
+    Uses vtkGlyph3DMapper to instance a sphere source at each pore center,
+    scaled by the pore radius. This is much faster than creating one actor
+    per pore.
+
+    Parameters
+    ----------
+    coord : list of array-like
+        List of (x, y, z) pore center coordinates.
+    radii : list of float
+        List of pore radii. The sphere diameter is set to 2 * radius.
+    colors : list of tuple or None, optional
+        RGB colors for each pore (in node order). If None, no color array
+        is added. Default is None.
+    resolution : int, optional
+        Sphere mesh resolution (theta and phi). Default is 8.
+
+    Returns
+    -------
+    vtk.vtkActor
+        A VTK actor containing all pore spheres as glyphs.
+    """
     # Conversion des tableaux NumPy en objets VTK
     coord_vtk = vtk.vtkPoints()
     data = vtk.vtkPolyData()
@@ -334,7 +510,7 @@ def create_sphere_glyphs(coord, radii, colors=None, resolution=8):
     radiusData.SetName("Radius")
     for r in radii:
         # scaling by the diameter
-        radiusData.InsertNextValue(2*r)
+        radiusData.InsertNextValue(2 * r)
 
     # Associez les rayons aux points
     data.SetPoints(coord_vtk)
@@ -381,15 +557,43 @@ def create_sphere_glyphs(coord, radii, colors=None, resolution=8):
 
 
 def create_tubes(heads, tails, radii, colors=None, resolution=8):
+    """Create a single VTK actor rendering all throats as tubes.
+
+    Uses vtkTubeFilter to instance cylinders along line segments between
+    throat endpoints, with radius varying per point. This is much faster
+    than creating one actor per throat.
+
+    Parameters
+    ----------
+    heads : list of array-like
+        List of (x, y, z) coordinates for the head (first endpoint) of each
+        tube segment.
+    tails : list of array-like
+        List of (x, y, z) coordinates for the tail (second endpoint) of each
+        tube segment.
+    radii : list of float
+        List of tube radii (one value per endpoint, i.e. 2 per throat).
+    colors : list of tuple or None, optional
+        RGB colors for each tube endpoint. If None, no color array is added.
+        Default is None.
+    resolution : int, optional
+        Tube mesh resolution (number of sides). Default is 8.
+
+    Returns
+    -------
+    vtk.vtkActor
+        A VTK actor containing all throat tubes.
+    """
     # Conversion des tableaux NumPy en objets VTK
 
     polydata = vtk.vtkPolyData()
-    points = np.vstack(zip(tails, heads))
-    pairs = np.arange(len(tails)*2).reshape(-1, 2)
-    radii = np.repeat(radii, 2)
+    points = list(zip(tails, heads))
+    points = np.vstack(points)
+    pairs = np.arange(len(tails) * 2).reshape(-1, 2)
+    # radii = np.repeat(radii, 2)
 
-    assert (points.size/3. == pairs.size)
-    assert (pairs.size == radii.size)
+    # assert (points.size // 3 == pairs.size)
+    # assert (pairs.size == radii.size)
 
     pointArray = vtk.vtkPoints()
     for (x, y, z) in points:
@@ -441,6 +645,24 @@ def create_tubes(heads, tails, radii, colors=None, resolution=8):
 
 
 def create_pore_actor(center, radius, resolution=8, **kwargs):
+    """Create a single VTK actor for one pore (sphere).
+
+    Parameters
+    ----------
+    center : array-like of float
+        (x, y, z) coordinates of the pore center.
+    radius : float
+        Pore radius.
+    resolution : int, optional
+        Sphere mesh resolution (theta and phi). Default is 8.
+    **kwargs
+        Additional keyword arguments (currently unused).
+
+    Returns
+    -------
+    vtk.vtkActor
+        A VTK actor containing a single sphere at the pore center.
+    """
     points = vtk.vtkPoints()
     points.InsertNextPoint(center[0], center[1], center[2])
     polydata = vtk.vtkPolyData()
@@ -465,6 +687,26 @@ def create_pore_actor(center, radius, resolution=8, **kwargs):
 
 
 def create_throat_actor(c1, c2, radius, resolution=6, **kwargs):
+    """Create a single VTK actor for one throat (cylinder).
+
+    Parameters
+    ----------
+    c1 : array-like of float
+        (x, y, z) coordinates of the first pore center.
+    c2 : array-like of float
+        (x, y, z) coordinates of the second pore center.
+    radius : float
+        Throat radius.
+    resolution : int, optional
+        Tube mesh resolution (number of sides). Default is 6.
+    **kwargs
+        Additional keyword arguments (currently unused).
+
+    Returns
+    -------
+    vtk.vtkActor
+        A VTK actor containing a single cylinder between c1 and c2.
+    """
     line = vtk.vtkLineSource()
     line.SetPoint1(c1[0], c1[1], c1[2])
     line.SetPoint2(c2[0], c2[1], c2[2])
@@ -480,40 +722,88 @@ def create_throat_actor(c1, c2, radius, resolution=6, **kwargs):
 
 
 def vtk_viewer(
-    pn,  save=True, render=True, cmap="viridis", filename=None, resolution=8, attr="radius", high=None, low=None
+    pn, save=True, render=True, camera=(20, 30), cmap="viridis", filename=None, resolution=8, attr="radius", high=None, low=None
 ):
+    """Generate a 3D rendering of the given pore network using Fast3DViewer.
+
+    Parameters
+    ----------
+    pn : pore_network
+        The pore network model instance to visualize.
+    save : bool, optional
+        If True, save the visualization to a JPEG file. Default is True.
+    render : bool, optional
+        If True, render the network in an interactive VTK window. If False,
+        the network is rendered offscreen only. Default is True.
+    camera : tuple of float, optional
+        (azimuth, elevation) camera angles in degrees. Default is (20, 30).
+    cmap : str, optional
+        Matplotlib colormap name used to map a given attribute to color.
+        Default is "viridis".
+    filename : str or None, optional
+        Output JPEG file path. If None, a default name is generated from the
+        network size and extent. Default is None.
+    resolution : int, optional
+        Mesh resolution for pores and throats. Default is 8.
+    attr : str, optional
+        Node/edge attribute used for coloring (default: "radius").
+    high : float or None, optional
+        Maximum value for colormap normalization. If None, uses the max of
+        the attribute values. Default is None.
+    low : float or None, optional
+        Minimum value for colormap normalization. If None, uses the min of
+        the attribute values. Default is None.
+
+    Notes
+    -----
+    Requires node/edge attribute ``attr`` to exist on the graph (e.g. ``radius``).
     """
-    Generate a 3D rendering of the given pore network.
-    pn: pore network instance
-    render: if True a the network is rendered in an interactive vtk window. It is rendered offscreen otherwise
-    save: the visualizaton is saved
-    cmap: colormap to map a given attribute (default radius)
-    filename: save file name
-    attr: each element is colored using the value of the given attribute (default: radius)
-    high: max value for normalization
-    low: min value for normalization
-    """
+    pattrval = list(nx.get_node_attributes(pn.graph, attr).values())
+    tattrval = list(nx.get_edge_attributes(pn.graph, attr).values())
 
-    pattrval = nx.get_node_attributes(pn.graph, attr).values()
-    tattrval = nx.get_edge_attributes(pn.graph, attr).values()
+    all_vals = pattrval + tattrval
+    if len(all_vals) == 0:
+        warn(f"No '{attr}' attribute found on nodes or edges. Cannot color the network.")
+        return
 
-    norm = Normalize(vmin=min(min(pattrval), min(tattrval)), vmax=max(max(pattrval), max(tattrval)))
+    vmin = low if low is not None else min(all_vals)
+    vmax = high if high is not None else max(all_vals)
+    norm = Normalize(vmin=vmin, vmax=vmax)
 
-    cmap = plt.get_cmap(cmap)
+    cmap_obj = plt.get_cmap(cmap)
 
-    pores_cm = [np.around(np.array(cmap(norm(r))[:-1])*255).astype(np.uint8) for r in nx.get_node_attributes(pn.graph, attr).values()]
-    throats_cm = [np.around(np.array(cmap(norm(r))[:-1])*255).astype(np.uint8) for r in nx.get_edge_attributes(pn.graph, attr).values()]
+    pores_cm = [
+        np.around(np.array(cmap_obj(norm(r))[:-1]) * 255).astype(np.uint8)
+        for r in nx.get_node_attributes(pn.graph, attr).values()
+    ]
+    throats_cm = [
+        np.around(np.array(cmap_obj(norm(r))[:-1]) * 255).astype(np.uint8)
+        for r in nx.get_edge_attributes(pn.graph, attr).values()
+    ]
 
     viewer = Fast3DViewer(pn)
 
     if render:
         viewer.render(pcmap=pores_cm, tcmap=throats_cm, resolution=resolution)
+        viewer.interact(azimuth=camera[0], elevation=camera[1])
 
     if save:
         if filename is None:
-            extent = pn.graph.graph["extent"]
-            filename = "PNM-{0:d}n-{1:d}e-{2:.2f}x{3:.2f}x{4:.2f}.jpg".format(
-                pn.graph.number_of_nodes(), pn.graph.number_of_edges(), extent[0], extent[1], extent[2]
-            )
-        viewer.save(filename, pcmap=pores_cm, tcmap=throats_cm, resolution=resolution)
+            extent = pn.graph.graph.get("extent")
+            if extent is not None:
+                filename = "PNM-{0:d}n-{1:d}e-{2:.2f}x{3:.2f}x{4:.2f}.jpg".format(
+                    pn.graph.number_of_nodes(), pn.graph.number_of_edges(), extent[0], extent[1], extent[2]
+                )
+            else:
+                filename = "PNM-{0:d}n-{1:d}e.jpg".format(
+                    pn.graph.number_of_nodes(), pn.graph.number_of_edges()
+                )
+        viewer.save(
+            filename,
+            pcmap=pores_cm,
+            tcmap=throats_cm,
+            resolution=resolution,
+            azimuth=camera[0],
+            elevation=camera[1],
+        )
 
