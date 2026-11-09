@@ -226,7 +226,12 @@ def random_PNM(
     add_periodic=True,
     periodic_faces=("x", "y"),
     search_radius_factor=2,
-    min_neighbors_factor=2
+    min_neighbors_factor=2,
+    sort_by_radius=False,
+    packing_method="cell",
+    max_unallocated_frac=0.05,
+    cell_size=None,
+    packing_verbose=False,
 ):
     """Generate a random packing of pores following the given radius distribution rdist with a target porosity "porosity"
     Initial box extent are given, but can be modified dynamically to get the correct porosity
@@ -240,20 +245,55 @@ def random_PNM(
     minc minimal pore connectivity (default 1)
     maxc maximal pore connectivity (default 100)
     BCgrid size: In order to assign the boundary conditions, the volume is discretised using a grid containing  BCgridsize cells per side
-    sratio: maximal pore surface area over total intersect area of connected throats ratio (default 1, which is not optimal)
+    sratio: maximal pore surface area over total intersect area of connected throats ratio (default 1, which is not optimal). sratio can also be a tuple
+    with (c, l, h, sigma) c center o fa normal distribution, l and h lowest and highest values and sigma the stdev
+    packing_method: packing algorithm to use. Either "cell" (cell list, fast, default) or "opt" (brute-force).
+    max_unallocated_frac: max fraction of unallocated pore volume before restart (used by "cell" method).
+    cell_size: cell side length for the cell list method (auto-computed if None).
+    packing_verbose: print packing progress.
     TODO: use a sratio distribution instead of a constant value
     """
 
-    pn = pnm.random_packing_opt(
-        extent=extent,
-        nbnodes=npores,
-        distributions_props=[({"func": rdist}, 1)],
-        target_porosity=porosity,
-        mindist="auto",
-        nb_trials=2000,
-        BCstep=BCgridsize,
-        fit_box=fit_box,
-    )
+    # Build the distributions_props list for the packing routines.
+    # rdist may be passed either as a dict of parameters (the default
+    # distribution() generator is then used) or as a dict containing a "func"
+    # key, or directly as a callable distribution function.
+    if isinstance(rdist, dict):
+        dist_props = (rdist, 1)
+    else:
+        dist_props = ({"func": rdist}, 1)
+
+    if packing_method == "cell":
+        pn = pnm.random_packing_opt_cell(
+            extent=extent,
+            nbnodes=npores,
+            distributions_props=[dist_props],
+            target_porosity=porosity,
+            mindist="auto",
+            nb_trials=2000,
+            BCstep=BCgridsize,
+            restart=True,
+            fit_box=fit_box,
+            max_unallocated_frac=max_unallocated_frac,
+            cell_size=cell_size,
+            verbose=packing_verbose,
+        )
+    elif packing_method == "opt":
+        pn = pnm.random_packing_opt(
+            extent=extent,
+            nbnodes=npores,
+            distributions_props=[dist_props],
+            target_porosity=porosity,
+            mindist="auto",
+            nb_trials=2000,
+            BCstep=BCgridsize,
+            restart=True,
+            fit_box=fit_box,
+        )
+    else:
+        raise ValueError(
+            "Unknown packing_method '{}'. Expected 'cell' or 'opt'.".format(packing_method)
+        )
 
     pnm.add_throats_by_surf(
         pn,
@@ -261,7 +301,7 @@ def random_PNM(
         PRTRR=PRTRR,
         minc=minc,
         maxc=maxc,
-        sort_by_radius=False,
+        sort_by_radius=sort_by_radius,
         border_correction=True,
         search_radius_factor=search_radius_factor,
         min_neighbors_factor=min_neighbors_factor
@@ -272,7 +312,6 @@ def random_PNM(
             pn,
             delta=0.01,
             faces=periodic_faces,
-            ratio=sratio,
             PRTRR=PRTRR,
             minc=minc,
             maxc=maxc,
@@ -285,194 +324,6 @@ def random_PNM(
     return pn
 
 
-def deprec_random_packing(
-    extent,
-    nbnodes,
-    distributions_props,
-    target_porosity=0.5,
-    mindist="auto",
-    boundary_thickness="auto",
-    nb_trials=1000,
-):
-    """
-    Sphere packing following an arbitrary distribution using brute force approach (-> slow for large number of pores...)
-    Use random_packing_opt instead
-    """
-
-    # On génère les rayons
-
-    length_OK = False
-    extent = np.array(extent)
-
-    while not length_OK:
-        radii = []
-
-        for props, probs in distributions_props:
-            dist = props.get("func", distribution)
-            r = list(dist(n_samples=int(np.ceil(probs * nbnodes)), **props))
-            radii.extend(r)
-
-        radii = np.array(radii[0:nbnodes])
-        max_radius = max(radii)
-        # Le volume est déterminé à partir de l'objectif de  porosité et du volume des pores
-        void_volume = (np.pi * (4 / 3) * radii**3).sum()
-        length = (void_volume / (target_porosity * np.prod(extent))) ** (1 / 3)
-        # En fonction de l'objectif de porosité, il est possible que la taille calculée soit
-        # inférieure aux dimensions du plus gros pore -> on augmente le nb de pores
-
-        if radii.size > 1:
-            lim = 2.1 * radii[:2].sum()
-        else:
-            lim = 2 * max_radius
-        if extent.min() * length < lim:
-            print(
-                "Computed min side length {} is smaller than the sum of the 2 largest pores diameter {}".format(
-                    extent.min() * length, max_radius
-                )
-            )
-            print("Increasing number of pores to :", nbnodes * 1.5)
-            nbnodes *= 1.5
-            length_OK = False
-        else:
-            break
-
-    min_radius = min(radii)
-    avg_radius = radii.sum() / radii.size
-
-    extent = extent * length
-
-    print("Max radius = {:.2e} and Min radius = {:.2e}".format(max_radius, min_radius))
-    print("Extent = ", extent)
-    print("Extent/(2*Rmax) = ", end="")
-    print(["{:.2f}".format(e / (2 * max_radius)) for e in extent])
-
-    net = pore_network()
-    net.graph.clear()
-    net.graph.graph["extent"] = list(extent)
-    net.graph.graph["graph_type"] = "random_packing"
-
-    radii.sort()
-    radii = radii[::-1]  # On place les plus gros pores d'abord
-
-    occupied_centers = []
-    occupied_radii = []
-    occupied_categories = []
-    unallocated_radii = []
-
-    total_volume = np.prod(extent)
-    void_volume = 0
-
-    maxit = nbnodes * 10
-
-    if mindist == "auto":
-        gap = min_radius * 0.5
-    else:
-        gap = mindist
-
-    pore_added = True
-    it = 0
-
-    if boundary_thickness == "auto":
-        epsilon = avg_radius
-    else:
-        epsilon = boundary_thickness
-
-    net.graph.graph["inner_extent"] = list(np.array(extent - 2 * epsilon))
-
-    for i, _ in enumerate(radii):
-        if len(occupied_centers) > 0:
-            # Remise à jour du kdtree seuleument si le nombre de pores a changé
-            if pore_added:
-                kdtree = KDTree(occupied_centers, leaf_size=40)
-        r = radii[i]
-
-        pore_added = False
-
-        for j in range(nb_trials):
-            # coordonnée aléatoire
-            if i == 0:  # First pore near the boundary
-                coords = r + np.random.rand(3) * np.minimum(1.2 * np.array([r, r, r]), extent - r)
-            # elif i == 1:    # Second pore
-            # coords = coords + radii[i-1] + np.random.rand(3) * (extent - r)
-            # else:       #Test d'overlapping sur les premiers gros pores afin de d'avoir une coord qui a plus de probablité d'être dans une zone libre. Limite le recours au kdtree
-            # c = r + np.random.rand(3) * (extent - r)
-            # r2 = (r+radii[0:min(i,20)])**2      #On teste les 20 premiers pores...
-            # while np.any(((c - coords)**2).sum() < r2):
-            # c = r + np.random.rand(3) * (extent - r)
-            # coords = c
-            else:
-                coords = r + np.random.rand(3) * (extent - r)
-
-            if len(occupied_centers) > 0:
-                # labels = kdtree.query_ball_point(coords,(max_radius + r)*1.05, n_jobs= 1)
-                labels, distances = kdtree.query_radius([coords], (max_radius + r) * 1.05 + gap, return_distance=True)
-
-                if len(labels[0]) == 0:
-                    distances = np.array([np.inf])
-                    # _, labels =  kdtree.query([coords],k=1,n_jobs=1)
-                    # distances, labels = kdtree.query([coords],k = 1,return_distance = True)
-                    # try:
-                    # _ = iter(labels)
-                    # except TypeError:
-                    # labels = [labels]
-                # labels = np.array(labels)
-                # distances = pairwise_distances(np.array(occupied_centers)[labels],np.array([coords]),n_jobs=4)[:,0]*0.998 - np.array(occupied_radii)[labels]
-                # distances = cdist(np.array(occupied_centers)[labels],[coords])[:,0]*0.998 - np.array(occupied_radii)[labels]
-                # if len(labels) > 5000: #Multiprocessing slows down the computation...
-                # with multiprocessing.Pool(processes=4) as pool:
-                # distances = pool.map(partial(eucl_dist,np.array([coords])), np.array(occupied_centers)[labels]) - np.array(occupied_radii)[labels]
-                # else:
-                # distances = 0.998 * np.einsum('ij,ij->i', [coords]-np.array(occupied_centers)[labels], [coords]-np.array(occupied_centers)[labels])**0.5 - np.array(occupied_radii)[labels]
-                else:
-                    distances = distances[0] * 0.998 - np.array(occupied_radii)[labels[0]]
-            else:
-                distances = np.array([np.inf])
-
-            if distances.min() > r + gap:
-                category = isinside(coords, r, extent, epsilon)
-
-                if category is not None:
-                    occupied_centers.append(coords)
-                    occupied_radii.append(r)
-                    occupied_categories.append(category)
-                    void_volume += np.pi * (4 / 3) * r**3
-                    pore_added = True
-                    # if i*100 % len(radii) == 0:
-                    # print ("#")
-                    print(
-                        "Pore {} with radius {:.2e} added after {} trials. Current porosity: {:.2f} % - unaloccated pores: {}   ".format(
-                            len(occupied_centers), r, j + 1, 100 * void_volume / total_volume, len(unallocated_radii)
-                        ),
-                        end="\r",
-                    )
-                    # del(radii[j])
-                    break
-            # else:
-            # todelete.append(j)
-
-        # for n in todelete:
-        # del(coords_dict[n])
-
-        if not pore_added:
-            unallocated_radii.append(i)
-
-    print("\n{} pores generated".format(len(occupied_centers)))
-
-    labels = np.arange(len(occupied_centers))
-    net.graph.add_nodes_from(labels)
-    nx.set_node_attributes(net.graph, dict(zip(labels, occupied_centers)), "center")
-    nx.set_node_attributes(net.graph, dict(zip(labels, occupied_radii)), "radius")
-    nx.set_node_attributes(net.graph, dict(zip(labels, occupied_categories)), "category")
-
-    print("Porosity:", void_volume / total_volume)
-    unallocated_volume = (np.pi * (4 / 3) * radii[np.array(unallocated_radii, dtype=np.int)] ** 3).sum()
-    print(
-        "Unallocated volume: {:.2e}, corresponding void_fraction: {:.2f} %".format(
-            unallocated_volume, 100 * unallocated_volume / total_volume
-        )
-    )
-
-    return net
 
 
 def random_packing_opt(
@@ -494,7 +345,8 @@ def random_packing_opt(
     target_porosity: tageted pore-body porosity [not the total porosity]
     mindist: minimal distance between two pore surface. If auto mindist = min (R1, R2) * 0.5
     nb_trials: number of trials per pore
-    BCStep:  To detect boundary pores, we use a discrete grid with BCSteps to dicretize the volume
+    BCStep:  To detect boundary pores, we use a discrete grid at each face with BCSteps to dicretize the surface (BCsteps * BCSteps)
+    Fro each grid cell, we find one BC pore which its nearest neighbor. Of course, several grid cell can mark the same pore. So there are at most BCsteps * BCSteps BC pores
     restart : if True, the algorithm restart if a pore cannot be placed
     fit_box : if True, the number of pores is modified in order to fit into the provided extent (default False)
 
@@ -582,7 +434,7 @@ def random_packing_opt(
     # maxit = nbnodes * 10
 
     if mindist == "auto":
-        gap = min_radius * 0.5
+        gap = min_radius * 0.25
     else:
         gap = mindist
 
@@ -624,7 +476,7 @@ def random_packing_opt(
                     " {:14} {:16.2e} {:16} {:16.2f} % {:19}   ".format(
                         len(occupied_centers), r, trials, 100 * void_volume / total_volume, len(unallocated_radii)
                     ),
-                    end="\r",
+                    end="\r",flush=True
                 )
                 # del(radii[j])
                 break
@@ -666,187 +518,283 @@ def random_packing_opt(
     return net
 
 
-def deprec_random_packing_scipy(
+def random_packing_opt_cell(
     extent,
     nbnodes,
     distributions_props,
     target_porosity=0.5,
     mindist="auto",
-    boundary_thickness="auto",
     nb_trials=1000,
-    mp_nbpoints=10000,
+    BCstep=100,
+    restart=True,
+    fit_box=False,
+    max_unallocated_frac=0.05,
+    cell_size=None,
+    verbose=True,
 ):
-    """Sphere packing following an arbitrary distribution using brute force approach (-> slow for large number of pores...)
-    Use random_packing_opt instead"""
+    """Spherical pores packing using a cell list (spatial hashing) for fast overlap detection.
 
-    # On génère les rayons
+    Same goal as random_packing_opt: place spherical pores following an arbitrary
+    radius distribution, ordered from largest to smallest so that the biggest pores
+    are placed first.  Unlike the brute-force version, this implementation uses a
+    uniform grid (cell list) so that a candidate pore is only tested against pores
+    in its own cell and the 26 neighbouring cells.  Collision testing stops as soon
+    as one overlap is found (early exit).
+
+    Parameters
+    ----------
+    extent : array-like of float
+        Initial box size [Lx, Ly, Lz].
+    nbnodes : int
+        Target number of pores.
+    distributions_props : list of tuple
+        List of (properties_dict, fraction) tuples describing the radius
+        distributions (see generate_radii / distribution in Stats).
+    target_porosity : float, optional
+        Target pore-body porosity (void volume / box volume). Default is 0.5.
+    mindist : str or float, optional
+        Minimum surface-to-surface distance between pores. If "auto", uses
+        min_radius * 0.25. Default is "auto".
+    nb_trials : int, optional
+        Number of random placement attempts per pore before giving up.
+        Default is 1000.
+    BCstep : int, optional
+        Grid resolution for boundary face detection (passed to SetFaceBCnodes).
+        Default is 100.
+    restart : bool, optional
+        If True, restart the whole packing when the unallocated volume fraction
+        exceeds max_unallocated_frac. Default is True.
+    fit_box : bool, optional
+        If True, adjust the number of pores so that the target porosity is met
+        in the provided extent. Default is False.
+    max_unallocated_frac : float, optional
+        Fraction of the target pore volume above which a restart is triggered
+        (only if restart=True). Default is 0.05 (5%).
+    cell_size : float or None, optional
+        Side length of the spatial hash cells. If None, it is set to
+        2 * max_radius + gap, which guarantees that any two colliding pores lie
+        in the same or neighbouring cells. Default is None.
+    verbose : bool, optional
+        If True, print progress information. Default is True.
+
+    Returns
+    -------
+    pore_network
+        A pore_network instance containing only the placed pores (no throats).
+        Graph attribute "graph_type" is set to "random_packing_cell".
+
+    Notes
+    -----
+    The cell list makes the overlap test nearly O(1) per candidate instead of
+    O(N), bringing the overall complexity much closer to O(N) than the O(N^2)
+    brute-force approach.  This is essential for networks with tens of thousands
+    of pores.
+    """
 
     length_OK = False
-    extent = np.array(extent)
+    extent = np.array(extent, dtype=float)
 
-    while not length_OK:
-        radii = []
+    # ------------------------------------------------------------------
+    # 1. Determine radii and (optionally) adapt box size / number of pores
+    # ------------------------------------------------------------------
+    if fit_box:
+        length = 1.0
+        radii = generate_radii(distributions_props, nbnodes)
+        void_volume = (np.pi * (4.0 / 3.0) * radii**3).sum()
+        temp_porosity = void_volume / np.prod(extent)
+        counter = 0
+        while abs(temp_porosity - target_porosity) > 0.0005 and counter < 5000:
+            counter += 1
+            nbnodes = int(np.around(nbnodes * target_porosity / temp_porosity))
+            radii = generate_radii(distributions_props, nbnodes)[0:nbnodes]
+            void_volume = (np.pi * (4.0 / 3.0) * radii**3).sum()
+            temp_porosity = void_volume / np.prod(extent)
 
-        for props, probs in distributions_props:
-            dist = props.get("func", distribution)
-            r = list(dist(n_samples=int(np.ceil(probs * nbnodes)), **props))
-            radii.extend(r)
-
-        radii = np.array(radii[0:nbnodes])
-        max_radius = max(radii)
-        # Le volume est déterminé à partir de l'objectif de  porosité et du volume des pores
-        void_volume = (np.pi * (4 / 3) * radii**3).sum()
-        length = (void_volume / (target_porosity * np.prod(extent))) ** (1 / 3)
-        # En fonction de l'objectif de porosité, il est possible que la taille calculée soit
-        # inférieure aux dimensions du plus gros pore -> on augmente le nb de pores
-
-        if radii.size > 1:
-            lim = 2.1 * radii[:2].sum()
-        else:
-            lim = 2 * max_radius
-        if extent.min() * length < lim:
+        if verbose:
             print(
-                "Computed min side length {} is smaller than the sum of the 2 largest pores diameter {}".format(
-                    extent.min() * length, max_radius
+                "{} pores will be generated to fit the target porosity of {}% in the given box".format(
+                    nbnodes, 100 * temp_porosity
                 )
             )
-            print("Increasing number of pores to :", nbnodes * 1.5)
-            nbnodes *= 1.5
-            length_OK = False
-        else:
-            break
+        max_radius = max(radii)
+
+    else:
+        # Adapt the box size so that the target porosity is reached
+        while not length_OK:
+            radii = generate_radii(distributions_props, nbnodes)
+            radii = np.array(radii[0:nbnodes])
+            max_radius = max(radii)
+            void_volume = (np.pi * (4.0 / 3.0) * radii**3).sum()
+            length = (void_volume / (target_porosity * np.prod(extent))) ** (1.0 / 3.0)
+
+            if radii.size > 1:
+                lim = 2.1 * radii[:2].sum()
+            else:
+                lim = 2.0 * max_radius
+            if extent.min() * length < lim:
+                if verbose:
+                    print(
+                        "Computed min side length {} is smaller than the sum of the 2 largest pores diameter {}".format(
+                            extent.min() * length, max_radius
+                        )
+                    )
+                    print("Increasing number of pores to :", nbnodes * 1.5)
+                nbnodes *= 1.5
+                length_OK = False
+            else:
+                break
 
     min_radius = min(radii)
-    avg_radius = radii.sum() / radii.size
-
     extent = extent * length
 
-    print("Max radius = {:.2e} and Min radius = {:.2e}".format(max_radius, min_radius))
-    print("Extent = ", extent)
-    print("Extent/(2*Rmax) = ", end="")
-    print(["{:.2f}".format(e / (2 * max_radius)) for e in extent])
+    if verbose:
+        print("Max radius = {:.2e} and Min radius = {:.2e}".format(max_radius, min_radius))
+        print("Extent = ", extent)
+        print("Extent/(2*Rmax) = ", end="")
+        print(["{:.2f}".format(e / (2.0 * max_radius)) for e in extent])
 
+    # ------------------------------------------------------------------
+    # 2. Prepare the cell list (spatial hash)
+    # ------------------------------------------------------------------
     net = pore_network()
     net.graph.clear()
     net.graph.graph["extent"] = list(extent)
-    net.graph.graph["inner_extent"] = list(extent)
-    net.graph.graph["graph_type"] = "random_packing"
+    net.graph.graph["graph_type"] = "random_packing_cell"
 
     radii.sort()
-    radii = radii[::-1]  # On place les plus gros pores d'abord
+    radii = radii[::-1]  # place largest pores first
+
+    if mindist == "auto":
+        gap = min_radius * 0.25
+    else:
+        gap = float(mindist)
+
+    if cell_size is None:
+        cell_size = 2.0 * max_radius + gap
+    cell_size = float(cell_size)
+
+    # Cell list: dict mapping (cx, cy, cz) -> list of pore indices
+    cells = {}
 
     occupied_centers = []
     occupied_radii = []
-    occupied_categories = []
     unallocated_radii = []
 
     total_volume = np.prod(extent)
-    void_volume = 0
+    void_volume = 0.0
+    unallocated_volume = 0.0
 
-    maxit = nbnodes * 10
+    trials = 0
 
-    if mindist == "auto":
-        gap = min_radius * 0.5
-    else:
-        gap = mindist
+    if verbose:
+        print("Allocated pores | current radius | current trials | current porosity | unallocated pores")
 
-    pore_added = True
-    it = 0
+    def _cell_key(coords):
+        """Return the integer cell key for a given coordinate."""
+        return tuple(np.floor(coords / cell_size).astype(int))
 
-    if boundary_thickness == "auto":
-        epsilon = avg_radius
-    else:
-        epsilon = boundary_thickness
+    def _add_to_cell(idx, coords):
+        key = _cell_key(coords)
+        bucket = cells.get(key)
+        if bucket is None:
+            cells[key] = [idx]
+        else:
+            bucket.append(idx)
 
-    for i, _ in enumerate(radii):
-        if len(occupied_centers) > 0:
-            # Remise à jour du kdtree seuleument si le nombre de pores a changé
-            if pore_added:
-                kdtree = cKDTree(occupied_centers, leafsize=40, compact_nodes=True, balanced_tree=False)
-        r = radii[i]
+    def _check_collision(coords, radius):
+        """Return True if the candidate pore overlaps any already-placed pore.
 
+        Only pores in the same or neighbouring cells are tested.  Stops at the
+        first overlap found (early exit).
+        """
+        cx, cy, cz = _cell_key(coords)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    bucket = cells.get((cx + dx, cy + dy, cz + dz))
+                    if bucket is None:
+                        continue
+                    for j in bucket:
+                        diff = coords - occupied_centers[j]
+                        dist_sq = diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]
+                        min_dist = radius + occupied_radii[j] + gap
+                        if dist_sq < min_dist * min_dist:
+                            return True
+        return False
+
+    # ------------------------------------------------------------------
+    # 3. Place pores one by one (largest first)
+    # ------------------------------------------------------------------
+    for i, r in enumerate(radii):
         pore_added = False
 
-        for j in range(nb_trials):
-            # coordonnée aléatoire
-            if i == 0:  # First pore near the boundary
-                coords = r + np.random.rand(3) * np.minimum(1.2 * np.array([r, r, r]), extent - r)
+        for _ in range(nb_trials):
+            trials += 1
+
+            # Random candidate coordinate (respecting pore radius inside the box)
+            if i == 0:
+                # First (and biggest) pore is placed near a boundary
+                coords = r + np.random.rand(3) * np.minimum(
+                    1.2 * np.array([r, r, r]), extent - 2.0 * r
+                )
             else:
-                coords = r + np.random.rand(3) * (extent - r)
+                coords = r + np.random.rand(3) * (extent - 2.0 * r)
 
-            if len(occupied_centers) > 0:
-                labels = kdtree.query_ball_point(coords, (max_radius + r) * 1.05 + gap, n_jobs=1)
-                # labels, distances = kdtree.query_radius([coords], (max_radius + r)*1.05,return_distance =True)
-
-                if len(labels) == 0:
-                    distances = np.array([np.inf])
-                    # distances, labels = kdtree.query([coords],k = 1,return_distance = True)
-                    # try:
-                    # _ = iter(labels)
-                    # except TypeError:
-                    # labels = [labels]
-                # labels = np.array(labels)
-                # distances = cdist(np.array(occupied_centers)[labels],[coords])[:,0]*0.998 - np.array(occupied_radii)[labels]
-
-                # Multiprocessing slows down the computation...
-                elif len(labels) > mp_nbpoints:
-                    with multiprocessing.Pool(processes=4) as pool:
-                        distances = (
-                            0.998
-                            * pool.map(partial(eucl_dist, np.array([coords])), np.array(occupied_centers)[labels])
-                            - np.array(occupied_radii)[labels]
-                        )
-                else:
-                    distances = (
-                        0.998 * eucl_dist([coords], np.array(occupied_centers)[labels])
-                        - np.array(occupied_radii)[labels]
-                    )
-
-            else:
-                distances = np.array([np.inf])
-
-            minimal_dist = distances.min()
-
-            if minimal_dist > r + gap:
-                category = isinside(coords, r, extent, epsilon)
-
-                if category is not None:
-                    occupied_centers.append(coords)
-                    occupied_radii.append(r)
-                    occupied_categories.append(category)
-                    void_volume += np.pi * (4 / 3) * r**3
-                    pore_added = True
+            if not _check_collision(coords, r):
+                occupied_centers.append(list(coords))
+                occupied_radii.append(r)
+                _add_to_cell(len(occupied_centers) - 1, coords)
+                void_volume += np.pi * (4.0 / 3.0) * r**3
+                pore_added = True
+                if verbose:
                     print(
-                        "Pore {} with radius {:.2e} added after {} trials. Current porosity: {:.2f} % - unaloccated pores: {}        ".format(
-                            len(occupied_centers), r, j + 1, 100 * void_volume / total_volume, len(unallocated_radii)
+                        " {:14} {:16.2e} {:16} {:16.2f} % {:19}   ".format(
+                            len(occupied_centers), r, trials, 100.0 * void_volume / total_volume, len(unallocated_radii)
                         ),
                         end="\r",
+                        flush=True,
                     )
-                    # del(radii[j])
-                    break
-            # else:
-            # todelete.append(j)
-
-        # for n in todelete:
-        # del(coords_dict[n])
+                break
 
         if not pore_added:
             unallocated_radii.append(i)
+            unallocated_volume += (4.0 / 3.0) * np.pi * r**3
+            if restart and unallocated_volume > max_unallocated_frac * target_porosity * total_volume:
+                if verbose:
+                    print("\n!!!--- Restarting ---!!!\n")
+                return random_packing_opt_cell(
+                    extent=extent / length,  # back to the original extent before scaling
+                    nbnodes=nbnodes,
+                    distributions_props=distributions_props,
+                    target_porosity=target_porosity,
+                    mindist=mindist,
+                    nb_trials=nb_trials,
+                    BCstep=BCstep,
+                    restart=restart,
+                    fit_box=fit_box,
+                    max_unallocated_frac=max_unallocated_frac,
+                    cell_size=cell_size,
+                    verbose=verbose,
+                )
 
-    print("\n{} pores generated".format(len(occupied_centers)))
+    if verbose:
+        print("\n{} pores generated".format(len(occupied_centers)))
 
     labels = np.arange(len(occupied_centers))
     net.graph.add_nodes_from(labels)
     nx.set_node_attributes(net.graph, dict(zip(labels, occupied_centers)), "center")
     nx.set_node_attributes(net.graph, dict(zip(labels, occupied_radii)), "radius")
-    nx.set_node_attributes(net.graph, dict(zip(labels, occupied_categories)), "category")
+    nx.set_node_attributes(net.graph, False, "periodic")
 
-    print("Porosity:", void_volume / total_volume)
-    unallocated_volume = (np.pi * (4 / 3) * radii[np.array(unallocated_radii, dtype=np.int)] ** 3).sum()
-    print(
-        "Unallocated volume: {:.2e}, corresponding void_fraction: {:.2f} %".format(
-            unallocated_volume, 100 * unallocated_volume / total_volume
+    pnm.SetFaceBCnodes(net, BCstep)
+
+    if verbose:
+        print("Porosity:", void_volume / total_volume)
+        print(
+            "Unallocated volume: {:.2e}, corresponding void_fraction: {:.2f} %".format(
+                unallocated_volume, 100.0 * unallocated_volume / total_volume
+            )
         )
-    )
 
     return net
+

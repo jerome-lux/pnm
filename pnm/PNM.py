@@ -16,15 +16,71 @@ int_to_side_dict = {v: k for k, v in side_to_int_dict.items()}
 
 
 class pore_network:
+    """Ball and stick pore network model.
 
-    """Ball and stick pore network model
-    \n The graph is stored in a networkX graph
-    \n geometry and other properties are stored in node and edge attributes
-    The class itself is only useful for its methods to manipulate the network"""
+    The graph is stored in a networkx.Graph. Geometry and other properties are
+    stored in node and edge attributes. The class provides methods to manipulate
+    the network (add/remove pores and throats, compute geometry, merge pores,
+    check overlapping, etc.).
+
+    Graph attributes:
+        graph_type : str
+            Type of network (e.g. "generic", "cubic_regular", "random_packing").
+        extent : list of float or None
+            Box size [lx, ly, lz] defined by pore surfaces.
+        bbox : list of float or None
+            Bounding box [xmin, ymin, zmin, xmax, ymax, zmax].
+        porosity : float or None
+            Porosity (void volume / box volume).
+        inner_extent : list of float or None
+            Inner extent (box size from pore centers), set by boundary node routines.
+        spacing : list of float or None
+            Grid spacing for regular networks.
+
+    Node attributes:
+        radius : float
+            Pore radius.
+        center : tuple of float
+            (x, y, z) coordinates of the pore center.
+        volume : float
+            Pore volume.
+        category : set of str
+            Set of side labels (x-, x+, y-, y+, z-, z+, inner, none).
+        periodic : bool
+            Whether the pore is periodic.
+        exchange_area : float
+            Cumulated exchange area at pore boundaries.
+        surface_ratio : float
+            Surface ratio for boundary correction.
+        boundary : str
+            Boundary label ("inlet", "outlet").
+
+    Edge attributes:
+        radius : float
+            Throat radius.
+        length : float
+            Throat length.
+        volume : float
+            Throat volume.
+        periodic : bool
+            Whether the throat is periodic.
+        pdir : str
+            Periodic direction.
+        sw : float
+            Wetting fluid saturation.
+        wf_side : int
+            Wetting fluid side (-1, 0, 1).
+    """
 
     def __init__(self, network=None):
-        """network is a valid unidirectional networkX graph
-        \n extent is a tuple (lx,ly,z) giving the extent of the PN"""
+        """Initialize a pore network.
+
+        Parameters
+        ----------
+        network : networkx.Graph or None, optional
+            An existing networkx graph to wrap. If None, a new empty graph is
+            created. When a graph is provided, compute_geometry() is called.
+        """
 
         if network is None:
             self.graph = nx.Graph()
@@ -40,11 +96,37 @@ class pore_network:
             self.compute_geometry()
 
     def __getitem__(self, n):
+        """Return the node attribute dictionary for a given node index.
+
+        Parameters
+        ----------
+        n : int
+            Node index.
+
+        Returns
+        -------
+        dict
+            The node attribute dictionary.
+        """
         return self.graph.nodes[n]
 
     @classmethod
     def read(cls, inputfilename, method="default"):
-        """Read an existing network using specified method (default to GML)"""
+        """Read an existing network from a file.
+
+        Parameters
+        ----------
+        inputfilename : str
+            Path to the input file.
+        method : str, optional
+            File format: "default"/"gml" (GML), "gexf", or "pickle".
+            Default is "default".
+
+        Returns
+        -------
+        pore_network
+            A new pore_network instance containing the read graph.
+        """
         method = method.lower()
 
         # import json
@@ -57,13 +139,34 @@ class pore_network:
         elif method == "gexf":
             return cls(network=nx.read_gexf(inputfilename))
         elif method == "pickle":
-           return cls(network=nx.read_gexf(inputfilename))
+            with open(inputfilename, 'rb') as infile:
+                return cls(network=pickle.load(infile))
 
     @classmethod
     def read_ascii(cls, inputfilename, data=True, legacy=False):
-        # Read ascii network file used in imbibition simulations
-        # if data == True, saturation, pressure values and ganglia labels are also imported
-        # if legacy==True: reads old network format
+        """Read an ascii network file used in imbibition simulations.
+
+        File format:
+            Header line: lx ly lz npores nthroats
+            Pore lines: x y z r sw pw pnw cc side
+            Throat lines: pi pj r l sw cc w_ind
+
+        Parameters
+        ----------
+        inputfilename : str
+            Path to the ascii input file.
+        data : bool, optional
+            If True, import saturation, pressure and ganglia label values.
+            Default is True.
+        legacy : bool, optional
+            If True, read the old network format (pore indices are 1-based).
+            Default is False.
+
+        Returns
+        -------
+        pore_network
+            A new pore_network instance populated from the file.
+        """
 
         network = cls.__new__(cls)
         network.__init__()
@@ -110,25 +213,37 @@ class pore_network:
         return network
 
     def write(self, outfilename, method="default"):
-        """Write the network to a file using gpickle
-        - default, gml: use gml format
-        - other methods: gexf or pickle (use pyhton pickle module)
+        """Write the network to a file.
+
+        Node category sets are converted to lists before saving for serialization.
+
+        Parameters
+        ----------
+        outfilename : str
+            Output file path (without extension; extension is added by the format).
+        method : str, optional
+            Output format: "default"/"gml" (GML), "gexf", or "pickle".
+            Default is "default".
         """
 
         method = method.lower()
 
-        if method == "pickle":
-            with open(outfilename + ".pnm", 'wb', encoding='utf-8') as f:
-                pickle.dump(self.graph, f)
-                return
-
         # Ensure that some graph attributes are converted to list before saving
-        self.graph.graph["extent"] = list(self.graph.graph["extent"])
-        self.graph.graph["inner_extent"] = list(self.graph.graph["inner_extent"])
+        extent = self.graph.graph.get("extent")
+        if extent is not None:
+            self.graph.graph["extent"] = list(extent)
+        inner_extent = self.graph.graph.get("inner_extent")
+        if inner_extent is not None:
+            self.graph.graph["inner_extent"] = list(inner_extent)
 
         # transform category attributes [set] to list
         bcattr = {k:list(v) for k, v in nx.get_node_attributes(self.graph, "category").items()}
         nx.set_node_attributes(self.graph, bcattr,"category")
+        
+        if method == "pickle":
+            with open(outfilename + ".pnm", 'wb') as f:
+                pickle.dump(self.graph, f, pickle.HIGHEST_PROTOCOL)
+                return
 
         if method == "gml" or method == "default":
             nx.write_gml(self.graph, outfilename + ".gml")
@@ -136,42 +251,41 @@ class pore_network:
             nx.write_gexf(self.graph, outfilename + ".gexf")
 
     def save_as_ascii(self, outfilename):
-        # TODO: définir un format général en écrivant tous les attributs du graph (redondant avec les méthodes de networkx ?)
-        """Write the network in a text file using following format
-        * lx,ly,lz,npores,nthroats  #Header
-        * x,y,x,r,sw,pw,pnw,cc,side #npores lines
-        * .
-        * .
-        * .
-        * pi,pj,r,l,sw,cc,w_ind   #nthroats lines
-        *
-        * où
-        * pour les pores:
-        * x,y,z: coordonnées du centre du pore
-        * r: rayon
-        * sw: saturation fluide mouillant
-        * pw: pression fluide mouillant
-        * pnw pression non mouillant
-        * cc: label de la composante connectée
-        * side: face à laquelle le pore appartient
-            * #sides are coded as follows :
-              #256  x-
-              #512  x+
-              #1024 y-
-              #2048 y+
-              #4096 z-
-              #8192 z+
+        """Write the network in a text file using the following format:
 
-        * pour les capillaires:
-        * pi, pj: indexes des pores adjacents [commence à 0]
-        * r: rayon,
-        * l: longueur du capillaire
-        * sw: saturation fluide mouillant
-        * cc, label de la composante connectée
-        * w_ind: index du pore du côté duquel se trouve le fluide mouillant
+        Header line: lx ly lz npores nthroats
+        Pore lines: x y z r sw pw pnw cc side
+        Throat lines: pi pj r l sw cc w_ind
+
+        Pore fields:
+            x, y, z : pore center coordinates
+            r : pore radius
+            sw : wetting fluid saturation
+            pw : wetting fluid pressure
+            pnw : non-wetting fluid pressure
+            cc : connected component label
+            side : face to which the pore belongs (bit-coded side labels:
+                256 x-, 512 x+, 1024 y-, 2048 y+, 4096 z-, 8192 z+)
+
+        Throat fields:
+            pi, pj : adjacent pore indices (starting at 0)
+            r : throat radius
+            l : throat length
+            sw : wetting fluid saturation
+            cc : connected component label
+            w_ind : index of the pore on the wetting-fluid side
+
+        Parameters
+        ----------
+        outfilename : str
+            Path to the output ascii file.
         """
 
         with open(outfilename, "w", encoding='utf-8') as netfile:
+            extent = self.graph.graph.get("extent")
+            if extent is None:
+                warn("Extent is not set. Cannot save as ascii.")
+                return
             netfile.write(
                 "{} {} {} {} {}\n".format(
                     self.graph.graph["extent"][0],
@@ -199,9 +313,30 @@ class pore_network:
                 )
 
     def check_overlapping(self, fit_radius=True, merge=True, mindist="auto", update_geometry=False):
-        """Check for overlapping pores.  if fit_radius=True, radius are modified
-        if pores cannot be fited or fit_radius = False, they are merged if merge=True or deleted if merge = False
-        if update_geometry is True, throats length and radii are automatically recomputed"""
+        """Check for overlapping pores and resolve them.
+
+        Pores are processed from largest to smallest. Overlapping pairs are
+        handled as follows:
+        - If fit_radius=True and the overlap can be removed by shrinking the
+          smaller pore, its radius is reduced.
+        - Otherwise, if merge=True the two pores are merged (the smaller is
+          removed into the larger); otherwise the smaller pore is deleted.
+
+        Parameters
+        ----------
+        fit_radius : bool, optional
+            If True, attempt to resolve overlaps by shrinking pore radii.
+            Default is True.
+        merge : bool, optional
+            If True, merge overlapping pores instead of deleting them.
+            Default is True.
+        mindist : str or float, optional
+            Minimum surface-to-surface distance. If "auto", uses 2% of the
+            pore radius. Default is "auto".
+        update_geometry : bool, optional
+            If True, recompute throat lengths and radii after resolving.
+            Default is False.
+        """
 
         from scipy.spatial.distance import cdist
         from scipy.spatial import cKDTree
@@ -239,7 +374,8 @@ class pore_network:
                     labels = kdtree.query_ball_point(
                         self.graph.nodes[n1]["center"], 2.5 * self.graph.nodes[n1]["radius"]
                     )
-                    labels.remove(i)
+                    # Remove the query point itself safely (it should always be present, but guard anyway)
+                    labels = [idx for idx in labels if idx != i]
                     # distances,labels = kdtree.query(x=net.graph.nodes[n1]['center'],2*self.graph.nodes[n1]['radius'],n_jobs=1)
                     # labels.remove(i)
                     # distance *= 0.998
@@ -315,8 +451,10 @@ class pore_network:
             self.set_auto_throats_radius()
 
     def compute_extent(self):
-        """
-        Compute coordinates of the box and the extent in which the network is
+        """Compute the bounding box and extent of the network.
+
+        The extent is derived from pore centers and radii (pore surfaces).
+        Results are stored in graph attributes "bbox" and "extent".
         """
         pores_radii = np.fromiter(nx.get_node_attributes(self.graph, "radius").values(), dtype=float)
         minbox = np.array(list(zip(*nx.get_node_attributes(self.graph, "center").values()))).T
@@ -344,8 +482,14 @@ class pore_network:
         self.graph.graph["extent"][2] = abs(zmax - zmin)
 
     def compute_porosity(self):
-        """
-        Compute the void volume (pores + throats) divied by the volume of box
+        """Compute the network porosity.
+
+        Porosity is the total void volume (pores + throats) divided by the box
+        volume (product of extent). The result is stored in graph attribute
+        "porosity". Instance attributes pores_volume and throats_volume are
+        also updated.
+
+        Requires geometry to be complete (compute_geometry() called).
         """
         if self.geom_complete:
             self.graph.graph["porosity"] = 0
@@ -368,14 +512,40 @@ class pore_network:
             warn("Geometry not complete. Cannot compute porosity")
 
     def _compute_pore_vol(self, n):
+        """Compute the volume of a single pore (sphere).
+
+        Parameters
+        ----------
+        n : int
+            Node index.
+
+        Returns
+        -------
+        float
+            Pore volume = 4/3 * pi * r^3.
+        """
         return (4 / 3) * np.pi * self.graph.nodes[n]["radius"] ** 3
 
     def _compute_throat_vol(self, n1, n2):
+        """Compute the volume of a single throat (cylinder).
+
+        Parameters
+        ----------
+        n1, n2 : int
+            Node indices of the throat endpoints.
+
+        Returns
+        -------
+        float
+            Throat volume = length * pi * r^2.
+        """
         return self.graph[n1][n2]["length"] * np.pi * self.graph[n1][n2]["radius"] ** 2
 
     def compute_throats_volume(self):
-        """
-        Compute the volume of all throats if geometry is complete and add it to edge attribute
+        """Compute the volume of all throats and store it as edge attribute "volume".
+
+        Requires geometry to be complete. Updates the instance attribute
+        throats_volume.
         """
         if self.geom_complete:
             throats_radii = np.fromiter(nx.get_edge_attributes(self.graph, "radius").values(), dtype=float)
@@ -392,8 +562,10 @@ class pore_network:
             warn("Geometry not complete. Cannot compute throat volumes")
 
     def compute_pores_volume(self):
-        """
-        Compute the volume of all pores if geometry is complete and add it to pore attribute
+        """Compute the volume of all pores and store it as node attribute "volume".
+
+        Requires geometry to be complete. Updates the instance attribute
+        pores_volume.
         """
         if self.geom_complete:
             pores_radii = np.fromiter(nx.get_node_attributes(self.graph, "radius").values(), dtype=float)
@@ -408,8 +580,13 @@ class pore_network:
             warn("Geometry not complete. Cannot compute pore volumes")
 
     def remove_isolated_pores(self, only_inner_pores=False):
-        """
-        Remove pores not connected to another pore
+        """Remove pores that are not connected to any other pore (degree 0).
+
+        Parameters
+        ----------
+        only_inner_pores : bool, optional
+            If True, only consider pores with category exactly {"inner"}.
+            Default is False (all pores).
         """
         if only_inner_pores:
             nodes = self.get_pores_by_category("inner", mode="equal")
@@ -422,14 +599,38 @@ class pore_network:
                 self.remove_pore(n)
 
     def automatic_geometry(self):
-        """Set throats length and radii automatically. Erase custom length/radius !
-        Not compatible with periodic networks !"""
+        """Set throat lengths and radii automatically from pore geometry.
+
+        Erases any custom throat length/radius values. Not compatible with
+        periodic networks (periodic throats keep their length).
+        """
         self.set_auto_throats_length()
         self.set_auto_throats_radius()
 
     def compute_geometry(self, autothroats=False):
-        """Compute geometry properties.
-        Check if geometry is complete"""
+        """Compute all geometry properties and check completeness.
+
+        Steps:
+        1. Reset volume accumulators.
+        2. Remove isolated pores.
+        3. Relabel nodes to consecutive integers (note: this breaks external
+           references to old node labels).
+        4. Check that all pores have radius and center attributes.
+        5. Check that all throats have radius and length attributes
+           (unless autothroats=True).
+        6. If complete, compute extent, pore volumes, throat volumes, and porosity.
+
+        Parameters
+        ----------
+        autothroats : bool, optional
+            If True, automatically compute throat lengths and radii instead of
+            requiring them as attributes. Default is False.
+
+        Returns
+        -------
+        bool
+            True if the geometry is complete, False otherwise.
+        """
 
         self.pores_volume = 0
         self.throats_volume = 0
@@ -481,15 +682,35 @@ class pore_network:
         inner_category="inner",
         verbose=False,
     ):
-        """Merge two pores n1 and n2
-        setcategory: if "union", the category of the pore is the union of n1 and n2
-        radius: merged pore radius. if not provided, it keeps the n1 radius
-        center: if not provided, it keeps the n1 center
-        check_throats: check throats radius so that their radius is the min of two connected pore
+        """Merge two pores n1 and n2 into a single pore (n1).
+
+        Pore n2 is removed. All throats connected to n2 are rewired to n1.
+        Throat lengths and radii connected to n1 are recomputed if
+        check_throats is True.
+
+        Parameters
+        ----------
+        n1, n2 : int
+            Node indices of the two pores to merge. n1 is kept, n2 is removed.
+        setcategory : str, optional
+            If "union", the resulting category is the union of both pores'
+            categories (with "inner" removed if multiple categories remain).
+            Default is "union".
+        radius : float or None, optional
+            Radius of the merged pore. If None, keeps n1's radius.
+        center : tuple of float or None, optional
+            Center of the merged pore. If None, keeps n1's center.
+        check_throats : bool, optional
+            If True, recompute throat length and radius for throats connected
+            to the merged pore. Default is True.
+        inner_category : str, optional
+            Unused parameter kept for compatibility. Default is "inner".
+        verbose : bool, optional
+            If True, print merge information. Default is False.
         """
 
         if not self.graph.has_node(n1) or not self.graph.has_node(n2):
-            warn("Nodes {} or {} does not exist. Cannot merge them".format(u, v))
+            warn("Nodes {} or {} does not exist. Cannot merge them".format(n1, n2))
             return
         elif verbose:
             print("Merging pore {} and {}".format(n1, n2))
@@ -527,6 +748,18 @@ class pore_network:
                 self._compute_auto_throat_radius(n1, n3)
 
     def _compute_auto_throat_radius(self, n1, n2):
+        """Compute the automatic throat radius as min(r(n1), r(n2)).
+
+        Parameters
+        ----------
+        n1, n2 : int
+            Node indices of the throat endpoints.
+
+        Returns
+        -------
+        float or None
+            The computed radius, or None if node attributes are missing.
+        """
         try:
             return min(self.graph.nodes[n1]["radius"], self.graph.nodes[n2]["radius"])
         except KeyError:
@@ -534,6 +767,20 @@ class pore_network:
             return None
 
     def _compute_auto_throat_length(self, n1, n2):
+        """Compute the automatic throat length as center distance minus radii.
+
+        The length is clamped to a minimum of 0 (overlapping pores give 0).
+
+        Parameters
+        ----------
+        n1, n2 : int
+            Node indices of the throat endpoints.
+
+        Returns
+        -------
+        float or None
+            The computed length, or None if node attributes are missing.
+        """
         try:
             delta = np.array(self.graph.nodes[n1]["center"]) - np.array(self.graph.nodes[n2]["center"])
             return max(
@@ -544,47 +791,103 @@ class pore_network:
             return None
 
     def set_auto_throats_radius(self):
-        """Compute throat radius as min(r(n1),r(n2))"""
+        """Set the radius of every throat to min(r(n1), r(n2)).
+
+        Erases any custom throat radius values.
+        """
 
         for n1, n2 in self.graph.edges:
             self.graph[n1][n2]["radius"] = self._compute_auto_throat_radius(n1, n2)
 
     def set_auto_throats_length(self):
-        """Compute throats length [not for throats used to enforce periodicity]. If l<0 (i.e. pores overlap), set it to 0.
-        \nAdd 'length' attribute to edges"""
+        """Compute and set the length of every non-periodic throat.
+
+        The length is the center-to-center distance minus the two pore radii,
+        clamped to a minimum of 0. Periodic throats (flagged by the "periodic"
+        edge attribute) are skipped.
+        """
 
         for n1, n2 in self.graph.edges:
-            if self.graph[n1][n2]["category"] != "periodic":
+            # Periodic throats are flagged via the 'periodic' edge attribute,
+            # not via a 'category' attribute.
+            if not self.graph[n1][n2].get("periodic", False):
                 self.graph[n1][n2]["length"] = self._compute_auto_throat_length(n1, n2)
 
     def get_pore_distance(self, n1, n2):
-        # TODO: take into account periodic BCs !s
+        """Compute the Euclidean distance between two pore centers.
+
+        Parameters
+        ----------
+        n1, n2 : int
+            Node indices.
+
+        Returns
+        -------
+        float
+            Distance between pore centers, or 0 if attributes are missing.
+        """
+        # TODO: take into account periodic boundary conditions
 
         try:
             delta = np.array(self.graph.nodes[n1]["center"]) - np.array(self.graph.nodes[n2]["center"])
             return np.sqrt(np.dot(delta, delta))
 
         except KeyError:
-            warn("Cannot Compute distance between pores {} and {}".format(n1, n2))
+            warn("Cannot compute distance between pores {} and {}".format(n1, n2))
             return 0
 
     def get_throat_section(self, n1, n2):
+        """Compute the cross-sectional area of a throat (pi * r^2).
+
+        Parameters
+        ----------
+        n1, n2 : int
+            Node indices of the throat endpoints.
+
+        Returns
+        -------
+        float
+            Throat section area, or 0 if attributes are missing.
+        """
         try:
             return np.pi * self.graph[n1][n2]["radius"] ** 2
 
         except KeyError:
-            warn("Cannot Compute section of throat between pores {} and {}".format(n1, n2))
+            warn("Cannot compute section of throat between pores {} and {}".format(n1, n2))
             return 0
 
     def update_porosity(self):
-        """just update the porosity using throats and pores volumes. Do not iterate through elements"""
+        """Update the porosity from stored pore and throat volumes.
+
+        Porosity = (pores_volume + throats_volume) / box_volume.
+        Does not recompute volumes or iterate through elements.
+        Requires geometry to be complete.
+        """
 
         if self.geom_complete:
             self.graph.graph["porosity"] = (self.pores_volume + self.throats_volume) / np.prod(
                 np.array(self.graph.graph["extent"])
             )
 
-    def add_pore(self, radius, center, category=set(), periodic=False, **kwargs):
+    def add_pore(self, radius, center, category=None, periodic=False, **kwargs):
+        """Add a pore to the network.
+
+        Parameters
+        ----------
+        radius : float
+            Pore radius.
+        center : tuple of float
+            (x, y, z) coordinates of the pore center.
+        category : set of str or None, optional
+            Set of side labels (e.g. {"x-", "y+"}) or {"inner"}. Defaults to an empty set.
+        periodic : bool, optional
+            Whether the pore is periodic. Default is False.
+        **kwargs
+            Additional node attributes.
+        """
+        if category is None:
+            category = set()
+
         n = self.graph.number_of_nodes()
 
         while self.graph.has_node(n):
@@ -595,6 +898,27 @@ class pore_network:
         )
 
     def add_throat(self, n1, n2, radius=None, length=None, periodic=False, pdir="none", **kwargs):
+        """Add a throat between two existing pores.
+
+        If radius or length is not provided, it is computed automatically from
+        the connected pore geometries. The "periodic" node attribute is set on
+        both endpoint pores.
+
+        Parameters
+        ----------
+        n1, n2 : int
+            Node indices of the two pores to connect.
+        radius : float or None, optional
+            Throat radius. If None, computed as min(r(n1), r(n2)).
+        length : float or None, optional
+            Throat length. If None, computed from pore centers and radii.
+        periodic : bool, optional
+            Whether the throat is periodic. Default is False.
+        pdir : str, optional
+            Periodic direction label. Default is "none".
+        **kwargs
+            Additional edge attributes.
+        """
 
         if self.graph.has_node(n1) and self.graph.has_node(n2):
             if radius is None:
@@ -606,15 +930,27 @@ class pore_network:
             nx.set_node_attributes(self.graph, dict(zip([n1, n2], [periodic, periodic])), "periodic")
 
         else:
-            warn("Cannot create throats between {} and {}: nodes do not exist".format(n1, n2))
+            warn("Cannot create throat between {} and {}: nodes do not exist".format(n1, n2))
 
     def remove_throat(self, n1, n2):
+        """Remove the throat between two pores. Silently ignores missing edges."""
+
         try:
             self.graph.remove_edge(n1, n2)
         except:
             pass
 
     def remove_pore(self, n, verbose=False):
+        """Remove a pore from the network.
+
+        Parameters
+        ----------
+        n : int
+            Node index of the pore to remove.
+        verbose : bool, optional
+            If True, print a confirmation message. Default is False.
+        """
+
         try:
             self.graph.remove_node(n)
             if verbose:
@@ -623,6 +959,14 @@ class pore_network:
             pass
 
     def clear_category(self, nodes=None):
+        """Clear the category attribute of pores (set to empty set).
+
+        Parameters
+        ----------
+        nodes : iterable of int or None, optional
+            Node indices to clear. If None, all nodes are cleared.
+        """
+
         if nodes is None:
             nodes = self.graph.nodes
 
@@ -630,23 +974,50 @@ class pore_network:
             self.graph.nodes[n]["category"] = set()
 
     def clear_throats(self):
-        """Remove all throats"""
+        """Remove all throats from the network."""
 
         print("removing all throats")
         self.graph.remove_edges_from(list(self.graph.edges))
 
     def add_attributes(self, pore_dict, throat_dict):
-        """Add attributes properties to an existing network"""
+        """Add attributes properties to an existing network.
 
-        self.graph.add_node_attributes(self.graph, pore_dict)
-        self.graph.add_edge_attributes(self.graph, throat_dict)
+        Parameters
+        ----------
+        pore_dict : dict
+            Dictionary mapping attribute name to a dict of {node: value} for node attributes.
+        throat_dict : dict
+            Dictionary mapping attribute name to a dict of {edge: value} for edge attributes.
+        """
+        for attr_name, values in pore_dict.items():
+            nx.set_node_attributes(self.graph, values, attr_name)
+
+        for attr_name, values in throat_dict.items():
+            nx.set_edge_attributes(self.graph, values, attr_name)
 
         self.compute_geometry()
 
     def set_radius_distribution(self, distributions_props, mode="pore", labels=None):
-        """Properties is a list of tuple (dictionary, probability) containing properties of each distribution
-        dict contains name and kwargs passed to the generator. Generator function is given by the key "func"
-        \n and probability of occurence"""
+        """Assign random radii to pores or throats from one or more distributions.
+
+        Generates 2x more radii than needed, shuffles them, and keeps the first n.
+        For pore mode, throat radii are set to min(r(n1), r(n2)).
+        For throat mode, pore radii are set to max of adjacent throat radii.
+
+        Parameters
+        ----------
+        distributions_props : list of tuple
+            List of (properties_dict, fraction) tuples. properties_dict must
+            contain a "func" key with a distribution generator function (defaults
+            to Stats.distribution) and any keyword arguments for that function.
+            fraction is the occurrence probability of this distribution.
+        mode : str, optional
+            Either "pore" (assign to pores) or "throat" (assign to throats).
+            Default is "pore".
+        labels : list of int or None, optional
+            Subset of node/edge indices to assign radii to. If None, all
+            nodes (pore mode) or all edges (throat mode) are used.
+        """
 
         from .Stats import distribution
 
@@ -694,13 +1065,28 @@ class pore_network:
                     warn("Cannot assign radius value to node", node)
 
     def get_pores_by_category(self, category, mode="match_one", nodes=None):
-        """Return pore labels if either:
-        \n intersection between pores['category'] and provided category is non empty (mode='match_one')
-        \n provided category is a subset of pores['category'] (mode='match_all')
-        \n provided category not in pores['category'] (mode='not_in')
-        \n provided category is the only category in pores['category'] (mode='equal')
-        \n nodes: a list of nodes to limit the search to
-        Category: list of pores labels"""
+        """Filter pores by their category attribute.
+
+        Parameters
+        ----------
+        category : str or list of str or tuple of str
+            Side label(s) to match (e.g. "x-", ["x+", "y-"], "inner").
+        mode : str, optional
+            Matching mode:
+            - "match_one": pore category intersects the query (at least one common label).
+            - "match_all": query category is a subset of the pore category.
+            - "not_in": pore category has no intersection with the query.
+            - "equal": pore category is exactly equal to the query.
+            Default is "match_one".
+        nodes : iterable of int or None, optional
+            Restrict the search to these node indices. If None, all nodes are
+            considered.
+
+        Returns
+        -------
+        list of int
+            List of matching pore node indices.
+        """
 
         if not (type(category) is list or type(category) is tuple):
             category = [category]
@@ -715,35 +1101,55 @@ class pore_network:
         if mode == "match_one":
             return [k for k, v in pores if len(set(v).intersection(category)) > 0]
         elif mode == "match_all":
-            return [k for k, v in pores if category.issubset(v) > 0]
+            return [k for k, v in pores if category.issubset(v)]
         elif mode == "not_in":
             return [k for k, v in pores if len(set(v).intersection(category)) == 0]
-        if mode == "equal":
+        elif mode == "equal":
             return [k for k, v in pores if category == set(v)]
 
         # val = nx.get_node_attributes(self.graph,'category')
         # return filter(lambda n: category in val[n], self.graph.nodes)
 
     def write_props(self, filename=None):
-        """Write the network stats to a json file"""
+        """Write network statistics to a JSON file (and print them).
+
+        Computes and stores a dictionary of network properties in
+        self.pnmprops: boundary pore counts per direction, number of pores and
+        throats, porosity, pore-body and throat porosity, average connectivity,
+        and extent.
+
+        Parameters
+        ----------
+        filename : str or None, optional
+            Path to the output JSON file. If None, stats are only printed.
+        """
         import json
 
         self.pnmprops = {}
         self.pnmprops["Boundary pores"] = {}
-        avgc = sum([self.graph.degree(n) for n in self.graph.nodes]) / self.graph.number_of_nodes()
+        n_nodes = self.graph.number_of_nodes()
+        if n_nodes > 0:
+            avgc = sum([self.graph.degree(n) for n in self.graph.nodes]) / n_nodes
+        else:
+            avgc = 0.0
         for direction in ["x", "y", "z"]:
             self.pnmprops["Boundary pores"][direction] = len(self.get_pores_by_category([direction + "+"])) + len(
                 self.get_pores_by_category([direction + "-"])
             )
 
-        extent = np.array(self.graph.graph.get("extent"))
-        self.pnmprops["Number of pores"] = self.graph.number_of_nodes()
+        extent = self.graph.graph.get("extent")
+        if extent is None:
+            extent_prod = 1.0
+        else:
+            extent_prod = float(np.prod(np.array(extent, dtype=float)))
+        self.pnmprops["Number of pores"] = n_nodes
         self.pnmprops["Number of throats"] = self.graph.number_of_edges()
-        self.pnmprops["Porosity"] = self.graph.graph["porosity"]
-        self.pnmprops["Pore body Porosity"] = self.pores_volume / np.prod(extent)
-        self.pnmprops["Throat Porosity"] = self.throats_volume / np.prod(extent)
+        self.pnmprops["Porosity"] = self.graph.graph.get("porosity")
+        self.pnmprops["Pore body Porosity"] = float(self.pores_volume) / extent_prod
+        self.pnmprops["Throat Porosity"] = float(self.throats_volume) / extent_prod
         self.pnmprops["Average Connectivity"] = avgc
-        self.pnmprops["Extent"] = list(self.graph.graph.get("extent"))
+        extent_val = self.graph.graph.get("extent")
+        self.pnmprops["Extent"] = list(extent_val) if extent_val is not None else None
 
         for key, val in self.pnmprops.items():
             print(key, val)

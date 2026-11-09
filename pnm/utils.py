@@ -152,8 +152,11 @@ def generate_radii(distributions_props, nbnodes):
     radii = []
 
     for props, probs in distributions_props:
+        # Extract the generator function without passing it as a kwarg
+        # (the "func" key is not a valid argument of the distribution generators).
         distgenerator = props.get("func", distribution)
-        r = list(distgenerator(n_samples=int(np.ceil(probs * nbnodes)), **props))
+        kwargs = {k: v for k, v in props.items() if k != "func"}
+        r = list(distgenerator(n_samples=int(np.ceil(probs * nbnodes)), **kwargs))
         radii.extend(r)
 
     return np.array(radii)[0:nbnodes]
