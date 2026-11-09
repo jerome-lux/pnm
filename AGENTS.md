@@ -11,7 +11,7 @@
 ```
 pnm/
   __init__.py          # exports pore_network, Generators, Visualization, Stats, Transformation, Algorithms
-  PNM.py               # pore_network class (core graph-based network model) <- current focus
+  PNM.py               # pore_network class (core graph-based network model)
   Generators.py        # cubic_PNM, random_PNM, random_packing_opt, random_packing_opt_cell, add_throats_by_surf, add_periodic_throats, scale, SetFaceBCnodes, SetBCnodes, ...
   Transformation.py    # invasion_percolation, assemble_pnm, add_throats, connect_pores, scale, aggregates_nodes_if_too_big
   Stats.py             # stats(), distribution(), inverse_transform_sampling_*
@@ -21,10 +21,15 @@ pnm/
     __init__.py
     MDiff.py           # molecular_diffusion, molecular_diffusion_deprecated
     TPFlow.py          # TPFlow (two-phase flow)
+    percolation.py     # mercury_intrusion (formerly InvPerc.py)
   Tools/
     net_renderer.py
     2D-network-viewer.py
 ```
+
+## Build Configuration
+- `pyproject.toml`: PEP 621 build configuration (replaces setup.py)
+- `setup.py`: legacy build script (retained for compatibility)
 
 ## Key Design Facts (PNM.py)
 - `pore_network` wraps a `networkx.Graph`. Node/edge attributes store geometry and properties.
@@ -169,3 +174,12 @@ Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing 
   methods.
 - French comments translated to English.
 - Comment in `bc_values` typo fixed ("aply" → "apply").
+
+## Status (Build configuration - COMPLETED)
+### Renaming:
+- `pnm/Algorithms/InvPerc.py` → `pnm/Algorithms/percolation.py` (git mv)
+- `pnm/__init__.py` import updated from `pnm.Algorithms.InvPerc` to `pnm.Algorithms.percolation`
+
+### Build system:
+- `pyproject.toml` created (PEP 621, replaces setup.py)
+- `setup.py` retained for compatibility

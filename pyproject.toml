@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "pnm"
+version = "1.1"
+description = "Simple Pore Network Model"
+authors = [
+    { name = "Jerome Lux", email = "jerome.lux@univ-lr.fr" },
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "networkx",
+    "scipy",
+    "scikit-learn",
+]
+
+[tool.setuptools.packages.find]
+include = ["pnm*"]
