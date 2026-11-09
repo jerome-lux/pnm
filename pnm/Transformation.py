@@ -352,15 +352,51 @@ def add_periodic_throats(
     min_neighbors_factor=3,
 ):
     """Add throats between opposed BC pores - must be called AFTER the function add_throats_by_surf
-    net: pore network model instance
-    delta: min length of a throat (min(ri, rj) * delta)
-    faces: faces to be connected ["x" connects faces "x+" and "x-"]
+
+    Connects pores on opposite boundary faces (e.g. "x" connects "x-" and "x+")
+    with periodic throats, enforcing surface coverage and connectivity constraints.
+
+    Parameters
+    ----------
+    net : pore_network
+        The pore network model instance. Must have been processed by
+        add_throats_by_surf (so that exchange_area and surface_ratio exist)
+        and by SetFaceBCnodes/compute_geometry (so that extent and categories exist).
+    delta : float, optional
+        Minimum throat length factor: min_length = min(r1, r2) * delta.
+        Default is 0.01.
+    faces : tuple of str, optional
+        Faces to connect. Each entry is an axis name ("x", "y", or "z");
+        the corresponding "-"/"+" faces are connected.
+        Default is ("x", "y", "z").
+    PRTRR : float, optional
+        Pore radius to throat radius ratio. Throat radius = min(r1, r2) / PRTRR.
+        Default is 2.
+    minc : int, optional
+        Minimum enforced connectivity per pore. Default is 0.
+    maxc : int or float, optional
+        Maximum connectivity per pore. Default is np.inf.
+    search_radius_factor : float, optional
+        Neighbors are searched within R * search_radius_factor in pass 1.
+        Default is 2.
+    min_neighbors_factor : int, optional
+        Factor applied to minc when searching for neighbors.
+        Default is 3.
+
+    Notes
+    -----
+    Edge attributes ``radius``, ``length``, ``periodic`` and ``pdir`` are set
+    on each new throat. Node attribute ``exchange_area`` is updated.
+    Requires node attribute ``surface_ratio`` (set by add_throats_by_surf).
     """
 
     if maxc < minc:
         maxc = minc + 1
 
-    extent = net.graph.graph["extent"]
+    extent = net.graph.graph.get("extent")
+    if extent is None:
+        warn("Extent is not set. Cannot add periodic throats.")
+        return
 
     def min_length(r1, r2):
         return min(r1, r2) * delta
@@ -481,8 +517,8 @@ def add_periodic_throats(
                         S12 = np.pi * r12**2
                         S1 = net.graph.nodes[n1]["exchange_area"] + S12
                         S2 = net.graph.nodes[n2]["exchange_area"] + S12
-                        sr1 = net.graph.nodes[n1]["surface_ratio"]
-                        sr2 = net.graph.nodes[n2]["surface_ratio"]
+                        sr1 = net.graph.nodes[n1].get("surface_ratio", 1.0)
+                        sr2 = net.graph.nodes[n2].get("surface_ratio", 1.0)
 
                         if (
                             S1 <= corrected_ratio(n1, face_id) * S1max * sr1

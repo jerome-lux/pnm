@@ -96,3 +96,11 @@ Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing 
 ### Docstrings:
 - `add_throats_by_surf` and `add_throats`: complete English docstrings (NumPy style) with Parameters/Returns/Notes sections.
 - French comments translated to English.
+
+### Bugs fixed in `add_periodic_throats`:
+1. **`extent = net.graph.graph["extent"]`** — KeyError if `SetFaceBCnodes`/`compute_geometry` never called. Now uses `.get("extent")` with None guard and warn.
+2. **`surface_ratio = net.graph.nodes[n]["surface_ratio"]`** — KeyError if `add_throats_by_surf` never called. Now uses `.get("surface_ratio", 1.0)`.
+
+### Docstrings:
+- `add_periodic_throats`: complete English docstring (NumPy style).
+- French comments in `add_periodic_throats` preserved as requested.
