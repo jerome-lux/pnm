@@ -16,6 +16,20 @@ DEFAULT_COLOR = (1, 1, 1)
 DEFAULT_OPACITY = 1
 
 class Fast3DViewer:
+    """Fast 3D viewer for pore networks using VTK glyphs and tube filters.
+
+    Unlike :class:`PNM_3d_viewer` (which creates one VTK actor per pore and
+    per throat, making it slow and memory-hungry for large networks), this
+    class uses a single glyph actor for all pores and a single tube actor for
+    all throats. This makes it suitable for networks with tens of thousands
+    of pores.
+
+    Parameters
+    ----------
+    network : pore_network
+        The pore network model instance to visualize.
+    """
+
     def __init__(self, network):
         self.network = network
         self.pore_actor = None
@@ -23,9 +37,29 @@ class Fast3DViewer:
 
     @classmethod
     def fromfile(cls, filename):
+        """Create a Fast3DViewer from a saved network file.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the network file (GML/GEXF/pickle format).
+
+        Returns
+        -------
+        Fast3DViewer
+            A new viewer instance containing the loaded network.
+        """
         return cls(network=pnm.pore_network.read(filename))
 
     def reset_renderer(self, bgcolor=(1, 1, 1)):
+        """Reset the VTK renderer with a given background color.
+
+        Parameters
+        ----------
+        bgcolor : tuple of float, optional
+            RGB background color (values in [0, 1]). Default is (1, 1, 1)
+            (white).
+        """
         self.renderer = vtk.vtkRenderer()
         self.renderer.SetBackground(bgcolor)
         cam = self.renderer.GetActiveCamera()
@@ -34,6 +68,21 @@ class Fast3DViewer:
         )
 
     def create_pores(self, colors=None, resolution=8, **kwargs):
+        """Create a single glyph actor representing all pores as spheres.
+
+        Each pore is rendered as a sphere scaled by its radius using
+        vtkGlyph3DMapper, which is much faster than creating one actor per pore.
+
+        Parameters
+        ----------
+        colors : list of tuple or None, optional
+            RGB colors for each pore (in node order). If None, all pores use
+            the default actor color. Default is None.
+        resolution : int, optional
+            Sphere mesh resolution (theta and phi). Default is 8.
+        **kwargs
+            Additional keyword arguments (currently unused).
+        """
 
         print(f"Creating pore glyph actor (resolution={resolution})")
 
@@ -42,8 +91,21 @@ class Fast3DViewer:
 
         self.pore_actor = create_sphere_glyphs(coord=centers, radii=radii, colors=colors)
 
-
     def create_throats(self, colors=None, resolution=6):
+        """Create a single tube actor representing all throats as cylinders.
+
+        Periodic throats are rendered as two tubes each: one crossing the
+        box boundary in the positive direction, and one in the negative
+        direction, to visualize the periodicity.
+
+        Parameters
+        ----------
+        colors : list of tuple or None, optional
+            RGB colors for each throat (in edge order). If None, all throats
+            use the default actor color. Default is None.
+        resolution : int, optional
+            Tube mesh resolution (number of sides). Default is 6.
+        """
 
         heads = []
         tails = []
@@ -113,20 +175,40 @@ class Fast3DViewer:
 
         self.throat_actor = create_tubes(heads, tails, radii, cmap, resolution=resolution)
 
-
-
     def create_renWin(self, size=(800, 1000)):
+        """Create a VTK render window and add the renderer.
+
+        Parameters
+        ----------
+        size : tuple of int, optional
+            Window size (width, height) in pixels. Default is (800, 1000).
+        """
         self.renWin = vtk.vtkRenderWindow()
         self.renWin.AddRenderer(self.renderer)
         self.renWin.SetSize(size)
 
     def close_renWin(self):
-        self.renWin.Finalize()
-        del self.renWin
-        self.renWin = None
-
+        """Close and delete the render window."""
+        if self.renWin is not None:
+            self.renWin.Finalize()
+            del self.renWin
+            self.renWin = None
 
     def render(self, pcmap=None, tcmap=None, resolution=8):
+        """Render the pore network (pores and throats).
+
+        Creates the pore and throat actors if they do not exist yet, then adds
+        them to the renderer.
+
+        Parameters
+        ----------
+        pcmap : list of tuple or None, optional
+            Pore colors (RGB tuples). Default is None.
+        tcmap : list of tuple or None, optional
+            Throat colors (RGB tuples). Default is None.
+        resolution : int, optional
+            Mesh resolution for pores and throats. Default is 8.
+        """
 
         self.reset_renderer()
 
@@ -138,8 +220,18 @@ class Fast3DViewer:
             self.create_throats(colors=tcmap, resolution=resolution)
         self.renderer.AddActor(self.throat_actor)
 
-
     def interact(self, azimuth=20, elevation=30, size=(800, 1000)):
+        """Start an interactive VTK rendering session.
+
+        Parameters
+        ----------
+        azimuth : float, optional
+            Camera azimuth angle in degrees. Default is 20.
+        elevation : float, optional
+            Camera elevation angle in degrees. Default is 30.
+        size : tuple of int, optional
+            Window size (width, height). Default is (800, 1000).
+        """
         self.create_renWin(size)
         iren = vtk.vtkRenderWindowInteractor()
         self.set_camera(azimuth, elevation)
@@ -152,12 +244,22 @@ class Fast3DViewer:
         # self.close_renWin()
 
     def reset_camera(self):
+        """Restore the camera to its initial position (saved at reset_renderer time)."""
         cam = self.renderer.GetActiveCamera()
         cam.SetPosition(self.camera_props["pos"])
         cam.SetFocalPoint(self.camera_props["focal"])
         cam.SetViewUp(self.camera_props["viewup"])
 
     def set_camera(self, azimuth, elevation):
+        """Position the camera with the given azimuth and elevation angles.
+
+        Parameters
+        ----------
+        azimuth : float
+            Camera azimuth angle in degrees.
+        elevation : float
+            Camera elevation angle in degrees.
+        """
         self.renderer.ResetCamera()
         self.renderer.GetActiveCamera().OrthogonalizeViewUp()
         self.renderer.GetActiveCamera().Azimuth(azimuth)
@@ -165,16 +267,37 @@ class Fast3DViewer:
         self.renderer.ResetCameraClippingRange()
 
     def save(self, filename, pcmap=None, tcmap=None, resolution=8, azimuth=20, elevation=30, size=(800, 1000)):
+        """Render the network offscreen and save it as a JPEG image.
 
-        # For an unknown reason, this does not work after interacting with the scene. Maybe the renWin is not closed correctly after the interaction
+        Parameters
+        ----------
+        filename : str
+            Output JPEG file path.
+        pcmap : list of tuple or None, optional
+            Pore colors. Default is None.
+        tcmap : list of tuple or None, optional
+            Throat colors. Default is None.
+        resolution : int, optional
+            Mesh resolution. Default is 8.
+        azimuth : float, optional
+            Camera azimuth angle. Default is 20.
+        elevation : float, optional
+            Camera elevation angle. Default is 30.
+        size : tuple of int, optional
+            Window size (width, height). Default is (800, 1000).
 
+        Notes
+        -----
+        For an unknown reason, this does not work after interacting with the
+        scene (the render window may not be closed correctly after interaction).
+        """
         self.render(pcmap=pcmap, tcmap=tcmap, resolution=resolution)
         self.create_renWin(size)
         self.set_camera(azimuth, elevation)
 
         self.renWin.OffScreenRenderingOn()
         self.renWin.Render()
-        # Création du filtre pour écriture de l'image du rendu
+        # Create the filter to write the rendered image
         w2i = vtk.vtkWindowToImageFilter()
         writer = vtk.vtkJPEGWriter()
         writer.SetQuality(100)
