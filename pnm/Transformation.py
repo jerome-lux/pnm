@@ -12,7 +12,8 @@ from .Stats import distribution
 EPS = 1.00000001
 
 
-def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False, keep_connected=True):
+def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False, keep_connected=True,
+                         articulation_recompute_interval=100):
     """Delete pores using an invasion percolation process.
 
     Pores are removed starting from a given face, ordered by radius (smallest
@@ -36,12 +37,27 @@ def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False
     keep_connected : bool, optional
         If True, articulation points are not removed, keeping the network
         connected. Default is True.
+    articulation_recompute_interval : int, optional
+        Recompute articulation points every N removed pores (instead of every
+        pore). Setting this to a large value (or 0 to disable recomputation)
+        greatly speeds up the algorithm for large networks, at the cost of
+        occasionally removing a pore that has become an articulation point
+        since the last recomputation. Default is 100.
 
     Notes
     -----
     Requires node attributes ``radius``, ``center`` and ``volume``, and graph
     attributes ``bbox`` and ``extent`` to be set (e.g. after compute_geometry).
     The input ``box`` is not modified (a copy is made internally).
+
+    Performance notes
+    -----------------
+    - Articulation points are recomputed every ``articulation_recompute_interval``
+      removed pores instead of every pore, reducing complexity from O(V^2) to
+      O(V^2 / interval) for that step.
+    - Pores are marked for removal (numpy boolean array) instead of being
+      deleted from the graph one by one; all removed pores are deleted in a
+      single batch at the end.
     """
 
     pn.graph = nx.convert_node_labels_to_integers(pn.graph)
@@ -50,6 +66,12 @@ def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False
     c = np.array(list(zip(*nx.get_node_attributes(pn.graph, "center").values()))).T
     # radii
     radii = np.array(list(nx.get_node_attributes(pn.graph, "radius").values()))
+    # volumes
+    volumes = np.array(list(nx.get_node_attributes(pn.graph, "volume").values()))
+
+    node_list = list(pn.graph.nodes())
+    n_nodes = len(node_list)
+    node_to_idx = {n: i for i, n in enumerate(node_list)}
 
     if box is not None:
         # Work on a copy to avoid mutating the caller's list
@@ -75,7 +97,7 @@ def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False
 
         subgraph = pn.graph.subgraph(active_pores)
 
-        vv_ini = np.array(list(nx.get_node_attributes(pn.graph, "volume").values()))[active_pores].sum()
+        vv_ini = volumes[active_pores].sum()
         for n1, n2 in subgraph.edges():
             vv_ini += subgraph[n1][n2]["volume"]
         vbox = (box[1] - box[0]) * (box[3] - box[2]) * (box[5] - box[4])
@@ -85,7 +107,7 @@ def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False
         active_pores = np.array(pn.graph.nodes())
 
         subgraph = pn.graph
-        vv_ini = np.array(list(nx.get_node_attributes(pn.graph, "volume").values())).sum()
+        vv_ini = volumes.sum()
         for n1, n2 in subgraph.edges():
             vv_ini += subgraph[n1][n2]["volume"]
 
@@ -111,32 +133,63 @@ def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False
 
     # Store potential pores to invade. Ordered by radius [(r,ind)]
     n0 = starting_face_nodes[np.argmin(radii[starting_face_nodes])]
+
+    # Use numpy arrays for marking (faster than dict lookups)
+    removed = np.zeros(n_nodes, dtype=bool)  # pores removed from the network
+    marked = np.zeros(n_nodes, dtype=bool)   # pores discovered (added to heap)
+
     stored_nodes = [(radii[n0], n0)]
-    marked = {i: 0 for i in subgraph.nodes()}
-    marked[n0] = 1
+    marked[node_to_idx[n0]] = True
     invaded = []
     heapify(stored_nodes)
     pf = pini
     vv = vv_ini
-    art = []
+
+    art = set()
+    pores_removed_count = 0
+    recompute = articulation_recompute_interval > 0
+
     while pf > target_porosity and stored_nodes:
-        if keep_connected:
-            art = list(nx.articulation_points(pn.graph))
+        # Recompute articulation points periodically (not every iteration).
+        # This is the main speedup: nx.articulation_points is O(V + E) per call.
+        if keep_connected and recompute and pores_removed_count % articulation_recompute_interval == 0:
+            art = set(nx.articulation_points(pn.graph))
 
         current_node = heappop(stored_nodes)[1]
-        if (current_node not in art) or not keep_connected:
-            invaded.append(current_node)
-            # Update volume and heap queue
-            vol = pn[current_node]["volume"]
-            for node in [n for n in subgraph.neighbors(current_node) if marked[n] == 0]:
-                vol += pn.graph[current_node][node]["volume"]
-                marked[node] = 1
-                heappush(stored_nodes, (subgraph[current_node][node]["radius"], node))
-            vv -= vol
-            pf = vv / vbox
-            pn.remove_pore(current_node, verbose=verbose)
-            if verbose:
-                print("Pore {} deleted (total {}), new box porosity = {} ".format(current_node, len(invaded), pf))
+        current_idx = node_to_idx[current_node]
+
+        # Skip if already removed (duplicate heap entry)
+        if removed[current_idx]:
+            continue
+
+        if keep_connected and current_node in art:
+            continue
+
+        # Mark as removed (physical deletion from graph happens in batch at the end)
+        removed[current_idx] = True
+        invaded.append(current_node)
+
+        # Update volume and heap queue
+        vol = volumes[current_idx]
+        for neighbor in subgraph.neighbors(current_node):
+            neighbor_idx = node_to_idx[neighbor]
+            if not removed[neighbor_idx]:
+                vol += pn.graph[current_node][neighbor]["volume"]
+                if not marked[neighbor_idx]:
+                    marked[neighbor_idx] = True
+                    heappush(stored_nodes, (subgraph[current_node][neighbor]["radius"], neighbor))
+        vv -= vol
+        pf = vv / vbox
+
+        pores_removed_count += 1
+
+        if verbose:
+            print("Pore {} deleted (total {}), new box porosity = {} ".format(
+                current_node, len(invaded), pf))
+
+    # Remove all invaded pores from the graph in one batch
+    if invaded:
+        pn.graph.remove_nodes_from(invaded)
 
     pn.compute_geometry()
     print(
