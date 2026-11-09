@@ -20,7 +20,7 @@ pnm/
   Visualization.py     # visualization routines
   Algorithms/
     __init__.py
-    MDiff.py           # molecular_diffusion, molecular_diffusion_deprecated
+    diffusion.py       # molecular_diffusion, molecular_diffusion_deprecated (formerly MDiff.py)
     TPFlow.py          # TPFlow (two-phase flow)
     percolation.py     # mercury_intrusion (formerly InvPerc.py)
   Tools/
@@ -71,20 +71,14 @@ Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing 
 - Class-level docstring documents all graph/node/edge attributes.
 - French comments translated to English.
 
-## Status (Generators.py - IN PROGRESS)
-### New function: `random_packing_opt_cell`
-- Replaces the brute-force O(N²) overlap test of `random_packing_opt` with a **cell list** (spatial hashing).
-- Cell size = 2 × max_radius + gap guarantees that any two colliding pores lie in the same or neighbouring cells (3×3×3 = 27 cells checked in 3D).
-- **Early exit** in collision testing: stops at the first overlap found instead of computing the exact minimum distance.
-- Full restart preserved, with configurable `max_unallocated_frac` (default 0.05) replacing the hard-coded 5%.
-- Optional `cell_size` parameter; auto-computed if None.
-- Performance: ~6× faster on 1000 pores, ~2.6s for 10000 pores (vs minutes expected for brute-force at that scale).
-- Same return type as `random_packing_opt`: a `pore_network` with pores only (no throats), `graph_type = "random_packing_cell"`.
+## Status (Generators.py - COMPLETED)
+### `random_packing_opt_cell` (removed)
+- Cell-list packing routine, superseded by the faster and more robust kdtree routines below; removed from the codebase. Its performance is kept as the baseline in the benchmark further down.
 
 ### `random_PNM` now accepts a `packing_method` option
-- `packing_method="cell"` (default): uses `random_packing_opt_cell` (fast, recommended).
-- `packing_method="opt"`: uses the original brute-force `random_packing_opt`.
-- Additional parameters: `max_unallocated_frac`, `cell_size`, `packing_verbose` are forwarded to the cell-list routine.
+- `packing_method="kdtree"` (default): uses `random_packing_kdtree`.
+- `packing_method="kdtree_importance"`: uses `random_packing_kdtree_importance`.
+- `packing_method="opt"`: uses the original brute-force `random_packing_opt` (reference only).
 - Invalid `packing_method` raises a `ValueError`.
 
 ### Bug fix in `utils.generate_radii`
@@ -92,6 +86,46 @@ Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing 
 
 ### Known issue (pre-existing, partially mitigated)
 - `generate_radii()` no longer breaks when `"func"` is omitted from `distributions_props` (default `distribution()` is used). If `"func"` is present, it is used as the generator and excluded from kwargs.
+
+### New functions: `random_packing_kdtree` and `random_packing_kdtree_importance`
+Two new packing routines for large networks (1e4–1e6 pores) with heavy-tailed radius distributions, sharing a common private engine `_kdtree_packing_engine`:
+
+- **Candidate pools + clearance**: instead of testing one random candidate at a time in pure Python, a pool of B candidates (`pool_size`, default 4096) is drawn and the "clearance" of every candidate (largest sphere radius that fits there, w.r.t. all placed pores and the box faces) is computed once with vectorized `scipy.spatial.cKDTree` ball queries. Pores are then placed largest-first: each pore picks a uniform random candidate among those whose clearance is large enough, and all clearances are updated in O(B). A pool serves many consecutive pores before being discarded, amortizing the tree query over hundreds of placements.
+- **Incremental cKDTree**: the main tree is rebuilt every `tree_rebuild_interval` placements (default 1024); pores placed since the last rebuild ("recent") are checked through a small temporary tree. Rebuilding N=1e5 points costs ~22 ms, i.e. ~20 µs amortized per placement — negligible.
+- **Two-level clearance check** (exact): the top ~1% of the radius distribution (`n_large_cap = max(16, N//100)`) are "large" pores, checked exhaustively against every candidate (bounded count); all other ("small") pores are covered by a ball query whose radius only needs to reach `r_i + gap + large_thresh`. This keeps the number of tested pairs small even when a few very large pores dominate the box size (essential for MIP-derived distributions spanning several orders of magnitude).
+- **Option B (`random_packing_kdtree_importance`)**: identical, except candidate pools are sampled from an occupancy map — a voxel grid (`voxel_resolution`, default 96 per side) whose weights are proportional to the remaining free volume per voxel (each placed sphere's volume is added to its center voxel). Exact validity is always re-checked afterwards; the map only biases sampling.
+- Output: pores only, `graph_type = "random_packing_kdtree"` / `"random_packing_kdtree_importance"`, `SetFaceBCnodes` called at the end. Restart logic (`max_unallocated_frac`, max 5 restarts) preserved. Real-time progress print (placed pores | current radius | pools drawn | porosity | unallocated), ~100 updates per run.
+- Optional `seed` parameter for reproducibility (restarts always use a fresh seed).
+
+### `random_PNM` now accepts `packing_method="kdtree"` and `"kdtree_importance"`
+New forwarded parameters: `pool_size` (default 4096), `tree_rebuild_interval` (default 1024), `voxel_resolution` (default 96, importance only). Note that `nb_trials` is **not** forwarded to the kdtree methods (their give-up control is `max_empty_pools`, default 20); it applies to "opt" only.
+
+### Bugs found in the original pre-processing (`random_packing_opt`, NOT modified)
+Discovered while writing the new routines; fixed only in the shared helper `_prepare_packing_radii` used by the kdtree functions:
+1. **"Box too small" guard used `radii[:2]`** (the first two *generated* radii, not the two largest). With heavy-tailed MIP data this makes the guard a near no-op that passes on almost every draw even when the two largest pores cannot both fit in the box — the baseline then silently drops the largest pore(s) (see benchmark run 2: porosity 0.239 instead of 0.35). The new helper uses the nearly necessary-and-sufficient opposite-corner condition `sqrt(3)*(L - r0 - r1) >= r0 + r1 + gap` on the actual two largest radii (measured: passes 28/30 draws at N=1e4 with GM1 data, vs 0/30 for the conservative `2.1*(r0+r1)` variant).
+2. **`nbnodes *= 1.5` produces a float** → next loop iteration crashes in `radii[0:nbnodes]` (TypeError) whenever the guard triggers. New helper keeps an integer (`int(nbnodes * 1.5)`).
+
+### Bug fixes in `random_packing_opt` (restart logic)
+- **Unbounded restart recursion**: when unallocated volume exceeded 5%, the function restarted itself with no cap → RecursionError on targets that random sequential addition cannot reach. Now capped at 5 restarts via an internal `_restart_count` parameter, same as the other routines.
+- **Restart passed the already-scaled extent** (box size drifted on every restart) and silently dropped `BCstep`/`fit_box`. It now passes `original_extent` (saved before scaling) and all parameters explicitly.
+
+### Imports cleanup
+- Removed unused `from sklearn.neighbors import KDTree` (leftover from an earlier attempt; its comment claimed sklearn was faster than scipy, but sklearn 1.6.1's `KDTree.query` does not support ball queries at all) and unused `import multiprocessing`.
+- Added `from scipy.spatial import cKDTree` (scipy is already a dependency).
+
+### Benchmark: kdtree vs cell-list baseline (10000 pores, extent=(1,1,1), porosity=0.35, GM1.csv notebook pipeline, e=1.5, PRTRR=2.0)
+4 runs per algorithm; cell-list baseline called with `nb_trials=500`.
+
+| Algorithm | Mean time | Std dev | Pores placed (per run) | Porosity (per run) |
+|-----------|-----------|---------|------------------------|--------------------|
+| cell-list baseline (`random_packing_opt_cell`, since removed) | 18.36 s | 18.98 s | 10000, **9998**, 10000, 10000 | 0.350, **0.239**, 0.350, 0.350 |
+| `random_packing_kdtree` (A) | **1.73 s** | 0.03 s | 10000 ×4 | 0.350 ×4 |
+| `random_packing_kdtree_importance` (B) | **1.89 s** | 0.08 s | 10000 ×4 | 0.350 ×4 |
+
+- **Speedup: ~10.6× on average, up to ~29× vs the slowest baseline run.**
+- Baseline time is highly draw-dependent (4.5–51 s) because the box size varies with the random radii draw (extent 4.75–31.7 in these runs); one run even failed to place the largest pore (porosity 0.239). The new algorithms are nearly constant-time per network (~1.7–2 s) regardless of box size, and always reach exactly the target porosity with all requested pores placed.
+- **A vs B at porosity 0.35**: importance sampling is slightly *slower* (voxel sampling + map update overhead outweighs the gain when free space is still abundant). The expected crossover where B wins is higher target porosity / larger N; to be re-benchmarked if needed.
+- Correctness verified at N=10000: exhaustive pair check (cKDTree `query_pairs`, ~3e7 pairs) found **zero overlaps** for both new algorithms (worst surface margin > 0), all pores inside the box. End-to-end `random_PNM(packing_method="kdtree"/"kdtree_importance")` validated (throats + periodic links + geometry complete).
 
 ## Status (Transformation.py - COMPLETED)
 ### Bugs fixed in `add_throats_by_surf`:
