@@ -1,30 +1,73 @@
 import networkx as nx
 import numpy as np
 from pnm import pore_network
-import collections
 
 
 def mercury_intrusion(pn, faces=("x+", "x-", "y+", "y-", "z+", "z-"), D_ratio=1.2, Dmax=500, Dmin=5e-3, verbose=False):
-    """Mercury intrusion
-    D_ratio is the diameter ratio between two iterations
-    Dmax and Dmin -> depending on the network units. Usually in micrometers.
-    On suppose qu'il n'y a pas de piègeage possible (par ex un capillaire entre deux pores saturés peut être saturé également)
+    """Mercury intrusion simulation.
+
+    Simulates mercury intrusion into a pore network by progressively decreasing
+    the intrusion diameter D. Pores and throats are filled when their diameter
+    (2*radius) is >= D, starting from boundary (entrance) pores and propagating
+    through connected throats.
+
+    Parameters
+    ----------
+    pn : pore_network
+        The pore network model instance. Must have ``radius`` and ``volume``
+        node attributes and ``radius`` and ``volume`` edge attributes
+        (e.g. after compute_geometry()).
+    faces : tuple of str, optional
+        Boundary faces used as mercury entry points
+        (e.g. ("x+", "x-") connects x+ and x- faces). Default is all 6 faces.
+    D_ratio : float, optional
+        Diameter reduction ratio between iterations: D[i+1] = D[i] / D_ratio.
+        Default is 1.2.
+    Dmax : float, optional
+        Maximum intrusion diameter. Default is 500.
+    Dmin : float, optional
+        Minimum intrusion diameter. The loop stops when D <= Dmin.
+        Default is 5e-3.
+    verbose : bool, optional
+        If True, print progress information. Default is False.
+
+    Returns
+    -------
+    Dlist : list of float
+        Sequence of intrusion diameters.
+    vint : list of float
+        Intruded mercury volume at each diameter step.
+
+    Notes
+    -----
+    Performance optimizations vs the original implementation:
+    - Uses a stack-based BFS instead of iterating over all source nodes at
+      every iteration. Only pores with newly fillable throats are processed.
+    - Uses sets (O(1) lookup) for filled pores and filled throats instead of
+      nested dict lookups.
+    - Precomputes node radii and volumes as numpy arrays for fast access.
+
+    The algorithm assumes no trapping (a capillary between two saturated pores
+    is also saturated).
     """
 
     pn.graph = nx.convert_node_labels_to_integers(pn.graph)
 
-    # radii
-    # radii = np.array(list(nx.get_node_attributes(pn.graph, "radius").values()))
-
     entrance_pores = pn.get_pores_by_category(category=faces, mode="match_one")
-    # les pores "sources", qui peuvent être remplis ou non
-    # Si source_nodes(i] == True, alors le fluide peut remplir les capillaires adjacents)
-    source_nodes = {i: False for i in entrance_pores}
-    filled_throats = collections.defaultdict(dict)
 
-    if len(source_nodes) <= 0:
+    if len(entrance_pores) <= 0:
         print(f"No Pores belonging to category {faces}. Quit")
         return
+
+    # Precompute node attributes as numpy arrays for fast indexed access
+    node_list = list(pn.graph.nodes())
+    node_to_idx = {n: i for i, n in enumerate(node_list)}
+    radii = np.array(list(nx.get_node_attributes(pn.graph, "radius").values()))
+    volumes = np.array(list(nx.get_node_attributes(pn.graph, "volume").values()))
+
+    # Filled state tracking using sets for O(1) membership tests
+    filled_pores = set()          # pore indices that are filled with Hg
+    filled_throats_set = set()    # (min_node, max_node) tuples for filled throats
 
     vint = []
     D = Dmax
@@ -32,70 +75,86 @@ def mercury_intrusion(pn, faces=("x+", "x-", "y+", "y-", "z+", "z-"), D_ratio=1.
 
     total_void_volume = pn.pores_volume + pn.throats_volume
 
-    while D > Dmin and len(source_nodes) > 0:
+    while D > Dmin:
 
         # Hg volume & current diameter
         vol = 0
         Dlist.append(D)
-        new_addition = True
         counter = 0
 
         print(f"Filling pores with entrance diameter >= {D:.2e}.")
 
+        # Stack of filled pores whose throats still need testing at current D.
+        # At each new D, all filled pores with open throats are re-added so
+        # their capillaries can be re-tested at the smaller diameter.
+        throat_test_stack = []
+        # List of pores discovered but not yet tested for self-filling (2*r >= D)
+        candidate_pores = []
+
+        # Add entrance pores that can self-fill at current D
+        for n in entrance_pores:
+            if n not in filled_pores and 2 * radii[node_to_idx[n]] >= D:
+                candidate_pores.append(n)
+
+        # Re-add all filled pores that still have unfilled throats, so their
+        # capillaries are re-tested at the new (smaller) diameter.
+        for n in filled_pores:
+            for neighbor in pn.graph.neighbors(n):
+                edge_key = (min(n, neighbor), max(n, neighbor))
+                if edge_key not in filled_throats_set:
+                    throat_test_stack.append(n)
+                    break
+
+        new_addition = True
+
         while new_addition:
 
             counter += 1
-            new_nodes = []
-            nodes_to_delete = []
             new_addition = False
             new_filled_throats_counter = 0
-            fill_current_pore = False
+            newly_filled = []
 
-            # Iterating source nodes
-            for active_node, filled in source_nodes.items():
-
-                # if Di> D, an empty active pore can be filled by Hg - this is useful for BC pores
-                if not filled and 2 * pn[active_node]["radius"] >= D:
-                    vol += pn[active_node]["volume"]
+            # Phase 1: Fill candidate pores that can self-fill (2*r >= D)
+            still_candidates = []
+            for n in candidate_pores:
+                if n not in filled_pores and 2 * radii[node_to_idx[n]] >= D:
+                    vol += volumes[node_to_idx[n]]
+                    filled_pores.add(n)
+                    newly_filled.append(n)
+                    throat_test_stack.append(n)
                     new_addition = True
-                    new_nodes.append(active_node)
-                    fill_current_pore = True
+                else:
+                    still_candidates.append(n)
+            candidate_pores = still_candidates
 
-                # Active filled pore - Hg can enter neighbors ##and not pn.graph[active_node][n]['periodic']
-                elif filled:
-                    # iterate empty throats - if 2*rt >= D, the throats is filled (as well as the pore, since rt <= rp)
-                    for node in [
-                        n
-                        for n in pn.graph.neighbors(active_node)
-                        if pn.graph[active_node][n]["radius"] * 2 >= D and not filled_throats.get(active_node, {}).get(n, False)
-                    ]:
-                        vol += pn.graph[active_node][node]["volume"]
+            # Phase 2: Test throats of filled pores (BFS propagation)
+            while throat_test_stack:
+                active_node = throat_test_stack.pop()
+
+                for neighbor in pn.graph.neighbors(active_node):
+                    edge_key = (min(active_node, neighbor), max(active_node, neighbor))
+                    if edge_key in filled_throats_set:
+                        continue
+
+                    throat_radius = pn.graph[active_node][neighbor]["radius"]
+                    if 2 * throat_radius >= D:
+                        # Fill the throat
+                        vol += pn.graph[active_node][neighbor]["volume"]
+                        filled_throats_set.add(edge_key)
                         new_filled_throats_counter += 1
-                        # Need to update [i][j] and [j][i] dict
-                        filled_throats[active_node][node] = True
-                        filled_throats[node][active_node] = True
                         new_addition = True
-                        # Si le pore voisin n'est pas actif ou pas rempli alors on l'ajoute à la liste des pores actifs et on le rempli
-                        if not source_nodes.get(node, False) and node not in new_nodes:
+
+                        # Fill the neighbor pore if not already filled
+                        if neighbor not in filled_pores:
+                            vol += volumes[node_to_idx[neighbor]]
+                            filled_pores.add(neighbor)
+                            newly_filled.append(neighbor)
+                            # The neighbor can now try to fill its own throats
+                            throat_test_stack.append(neighbor)
                             new_addition = True
-                            new_nodes.append(node)
-                            vol += pn[node]["volume"]
-
-                # Si tous les capillaires sont remplis on désactive le pore
-                if filled or fill_current_pore:
-                    n_filled_throats = len([n for n in pn.graph.neighbors(active_node) if filled_throats.get(active_node, {}).get(n, False)])
-
-                    if n_filled_throats == pn.graph.degree(active_node):
-                        nodes_to_delete.append(active_node)
 
             if new_addition:
-                print(f"-Iteration {counter:<5d}, Volume: {vol:.2e}, pores filled: {len(new_nodes):<5d}, throats filled {new_filled_throats_counter:<5d} ")
-
-            # Update source _nodes
-            for index in nodes_to_delete:
-                source_nodes.pop(index, None)
-            for index in new_nodes:
-                source_nodes[index] = True
+                print(f"-Iteration {counter:<5d}, Volume: {vol:.2e}, pores filled: {len(newly_filled):<5d}, throats filled {new_filled_throats_counter:<5d} ")
 
         vint.append(vol)
         D /= D_ratio
