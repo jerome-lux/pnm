@@ -932,7 +932,7 @@ def add_throats_by_surf(
                         net.graph.nodes[n1]["exchange_area"] += S12
                         net.graph.nodes[n2]["exchange_area"] += S12
                         break
-        print(f"Iteration {n:d}:  {100 * (counter + 1) / len(candidates):5.2f}% completed  ")
+        print(f"Iteration {n:d}:  {100 * (counter + 1) / len(candidates):5.2f}% completed  ", end="\r")
 
 
 def scale(net, factor):

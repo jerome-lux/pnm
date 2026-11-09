@@ -5,6 +5,7 @@
 - **Package**: `pnm` (Simple Pore Network Model), version 1.1
 - **Author**: Jerome Lux (jerome.lux@univ-lr.fr)
 - **Environment**: conda `vtk` (`/home/jlux/miniforge3/envs/vtk`), Python 3.12.5
+- **Installation**: `pip install -e .` (editable mode, from project root)
 - **Domain**: Random pore network generator + simulation routines (diffusion, two-phase flow, ...)
 
 ## Package Structure
