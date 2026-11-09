@@ -138,3 +138,34 @@ Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing 
 - Performance: ~2.3x speedup on 10000 pores (0.57s → 0.25s).
 - Results are equivalent to the original implementation (minor volume difference <1% due to processing order).
 - Complete English docstring (NumPy style).
+
+## Status (Algorithms/diffusion.py - COMPLETED)
+### Bugs fixed in `molecular_diffusion`:
+1. **`setup_coef_matrix`** — Used `nx.adjacency_matrix().tolil()` with slow LIL slicing
+   (`adjm[active_nodes] = 0`, `adjm[:, dirichlet_nodes] = 0`) and `deepcopy(adjm)`.
+   Replaced with a fully vectorized COO assembly: all throat conductances are
+   pre-computed in one pass, diagonal terms accumulated with `np.add.at`, and
+   the matrix built directly from data/rows/cols arrays. No more LIL slicing
+   or deepcopy.
+2. **`solve`** — scipy's `cg` uses `rtol`, not `tol` (since scipy 1.0). Now tries
+   `rtol` first, falls back to `tol` on TypeError.
+3. **`get_concentration`** — Caught bare `except:` (too broad). Now catches
+   `(AttributeError, TypeError, IndexError)` specifically.
+4. **`setup_coef_matrix`** — Missing guard for `n == 0` and empty edge list.
+   Added early returns with warnings.
+
+### Performance optimization in `molecular_diffusion.setup_coef_matrix`:
+- All throat conductances pre-computed in a single pass over edges (instead of
+  calling `_flow_coef` separately for diagonal, off-diagonal, and Dirichlet
+  terms).
+- Matrix assembled directly in COO format from concatenated arrays.
+- Measured: ~0.09s to build matrix on 5000 pores / 10000 throats.
+- `compute_boundary_flow` rewritten to iterate directly over boundary nodes'
+  neighbors instead of rebuilding `nx.adjacency_matrix()` with LIL slicing.
+
+### Docstrings:
+- `molecular_diffusion` and `molecular_diffusion_deprecated`: complete English
+  docstrings (NumPy style) with Parameters/Returns/Notes sections for all
+  methods.
+- French comments translated to English.
+- Comment in `bc_values` typo fixed ("aply" → "apply").
