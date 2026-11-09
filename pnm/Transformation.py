@@ -14,12 +14,34 @@ EPS = 1.00000001
 
 def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False, keep_connected=True):
     """Delete pores using an invasion percolation process.
-    pn: pore network instance
-    face: where to begin the invasion
-    target_porosity: the invasion stops when the porosity of the computing volume reach the target
-    Note that the porosity is only approximate as t
-    box: subvolume (6 ints)
-    keep_connected: if True, all remaining pores are connected to the network
+
+    Pores are removed starting from a given face, ordered by radius (smallest
+    first), until the porosity reaches the target value. Articulation points
+    can be preserved to keep the network connected.
+
+    Parameters
+    ----------
+    pn : pore_network
+        The pore network model instance.
+    target_porosity : float
+        The invasion stops when the porosity reaches this value.
+    face : str, optional
+        Boundary face where the invasion begins (e.g. "x-", "y+", "z-").
+        Default is "x-".
+    box : list of float or None, optional
+        Subvolume [xmin, xmax, ymin, ymax, zmin, zmax] to restrict the invasion.
+        If None, the whole network is used. Default is None.
+    verbose : bool, optional
+        If True, print progress information. Default is False.
+    keep_connected : bool, optional
+        If True, articulation points are not removed, keeping the network
+        connected. Default is True.
+
+    Notes
+    -----
+    Requires node attributes ``radius``, ``center`` and ``volume``, and graph
+    attributes ``bbox`` and ``extent`` to be set (e.g. after compute_geometry).
+    The input ``box`` is not modified (a copy is made internally).
     """
 
     pn.graph = nx.convert_node_labels_to_integers(pn.graph)
@@ -30,12 +52,18 @@ def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False
     radii = np.array(list(nx.get_node_attributes(pn.graph, "radius").values()))
 
     if box is not None:
-        box[0] = max(box[0], pn.graph.graph["bbox"][0])
-        box[1] = max(box[1], pn.graph.graph["bbox"][1])
-        box[2] = max(box[2], pn.graph.graph["bbox"][2])
-        box[3] = min(box[3], pn.graph.graph["bbox"][3])
-        box[4] = min(box[4], pn.graph.graph["bbox"][4])
-        box[5] = min(box[5], pn.graph.graph["bbox"][5])
+        # Work on a copy to avoid mutating the caller's list
+        box = list(box)
+        bbox = pn.graph.graph.get("bbox")
+        if bbox is None:
+            warn("bbox is not set. Cannot restrict invasion to a box.")
+            return
+        box[0] = max(box[0], bbox[0])
+        box[1] = max(box[1], bbox[1])
+        box[2] = max(box[2], bbox[2])
+        box[3] = min(box[3], bbox[3])
+        box[4] = min(box[4], bbox[4])
+        box[5] = min(box[5], bbox[5])
         active_pores = np.where(
             (c[..., 0] >= box[0])
             & (c[..., 0] <= box[1])
@@ -61,7 +89,11 @@ def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False
         for n1, n2 in subgraph.edges():
             vv_ini += subgraph[n1][n2]["volume"]
 
-        vbox = np.prod(np.array(pn.graph.graph["extent"]))
+        extent = pn.graph.graph.get("extent")
+        if extent is None:
+            warn("Extent is not set. Cannot compute initial porosity.")
+            return
+        vbox = np.prod(np.array(extent))
         pini = vv_ini / vbox
 
     print("Box volume = {}, volume = {}".format(vbox, vv_ini))
@@ -116,22 +148,69 @@ def invasion_percolation(pn, target_porosity, face="x-", box=None, verbose=False
 
 
 def assemble_pnm(pn1, pn2, axis="x", ratio=1, minc=3, maxc=np.inf, BCgridsize=100, PRTRR=1):
-    """Merge two pore networks. Return a single pnm instance.
-    The 2 pnm are assembled in the following manneer:
-    the pn2 coords are increased by the pn1 extent in the direction given by the axis argument
-    TODO: change extent to bbox
+    """Merge two pore networks into a single pore_network instance.
+
+    The coordinates of pn2 are shifted along the given axis so that pn2 starts
+    where pn1 ends (offset = pn1 extent / bbox in that direction). Boundary
+    nodes are recomputed and throats are added between the two networks at the
+    interface.
+
+    Parameters
+    ----------
+    pn1 : pore_network
+        First pore network (upstream).
+    pn2 : pore_network
+        Second pore network (downstream), whose coordinates are shifted.
+    axis : str, optional
+        Assembly axis: "x", "y" or "z". Default is "x".
+    ratio : float, optional
+        Pore surface coverage ratio passed to add_throats_by_surf.
+        Default is 1.
+    minc : int, optional
+        Minimum connectivity for interface throats. Default is 3.
+    maxc : int or float, optional
+        Maximum connectivity for interface throats. Default is np.inf.
+    BCgridsize : int, optional
+        Grid resolution for boundary face detection in SetFaceBCnodes.
+        Default is 100.
+    PRTRR : float, optional
+        Pore radius to throat radius ratio for interface throats.
+        Default is 1.
+
+    Returns
+    -------
+    pore_network
+        The assembled network.
+
+    Notes
+    -----
+    Requires graph attributes ``graph_type``, ``bbox`` and ``spacing`` on pn1,
+    and ``bbox`` on pn2. Falls back gracefully if some are missing.
     """
 
     i = {"x": 0, "y": 1, "z": 2}[axis]
 
-    if pn1.graph.graph["graph_type"] == "cubic_regular":
+    graph_type1 = pn1.graph.graph.get("graph_type", "generic")
+    if graph_type1 == "cubic_regular":
         centers = np.array(list(zip(*nx.get_node_attributes(pn1.graph, "center").values()))).T
-        offset = centers[:, i].max() + pn1.graph.graph["spacing"][i] * 0.5
+        spacing = pn1.graph.graph.get("spacing")
+        if spacing is not None:
+            offset = centers[:, i].max() + spacing[i] * 0.5
+        else:
+            offset = centers[:, i].max()
     else:
-        offset = pn1.graph.graph["bbox"][i + 3]
+        bbox1 = pn1.graph.graph.get("bbox")
+        if bbox1 is None:
+            warn("pn1 bbox is not set. Cannot compute offset.")
+            return pn1
+        offset = bbox1[i + 3]
 
     c = np.array(list(zip(*nx.get_node_attributes(pn2.graph, "center").values()))).T
-    c[:, i] += offset - pn2.graph.graph["bbox"][i]
+    bbox2 = pn2.graph.graph.get("bbox")
+    if bbox2 is None:
+        warn("pn2 bbox is not set. Cannot assemble networks.")
+        return pn1
+    c[:, i] += offset - bbox2[i]
     nx.set_node_attributes(pn2.graph, dict(zip(list(pn2.graph.nodes), list(c))), name="center")
 
     newgraph = nx.disjoint_union(pn1.graph, pn2.graph)
@@ -171,7 +250,27 @@ def assemble_pnm(pn1, pn2, axis="x", ratio=1, minc=3, maxc=np.inf, BCgridsize=10
 
 
 def connect_pores(pn, nbunch1, nbunch2):
-    """Connect pores in nbunch1 to nearest pore in nbunch2"""
+    """Connect each pore in nbunch1 to its nearest pore in nbunch2.
+
+    Uses a nearest-neighbor search (via numba-accelerated euclidean distance)
+    to find, for each pore in nbunch1, the closest pore in nbunch2, and adds
+    a throat between them.
+
+    Parameters
+    ----------
+    pn : pore_network
+        The pore network model instance.
+    nbunch1 : iterable of int
+        Source pore node indices.
+    nbunch2 : iterable of int
+        Target pore node indices.
+
+    Notes
+    -----
+    Edge attribute ``radius`` is set on each new throat (auto-computed as
+    min(r(n1), r(n2))). Throat length is NOT set here.
+    Requires ``center`` attribute on all nodes in nbunch1 and nbunch2.
+    """
 
     centers = nx.get_node_attributes(pn.graph, "center")
     centers1 = np.array([np.array(centers[i]) for i in nbunch1])
@@ -784,9 +883,36 @@ def add_throats_by_surf(
 
 
 def scale(net, factor):
-    """Scales the network dimensions, centers, radii, etc. by 'factor'"""
+    """Scale the network dimensions, centers, radii, throat lengths, etc. by a factor.
 
-    indices = net.graph.nodes
+    All geometric attributes (pore centers and radii, throat radii and lengths)
+    are multiplied by ``factor``. Graph attributes ``extent`` and ``inner_extent``
+    are also scaled. Geometry is recomputed afterwards.
+
+    Parameters
+    ----------
+    net : pore_network
+        The pore network model instance to scale.
+    factor : float
+        Scaling factor (must be > 0).
+
+    Raises
+    ------
+    ValueError
+        If ``factor`` is not positive.
+    KeyError
+        If ``extent`` or ``inner_extent`` graph attributes are not set.
+
+    Notes
+    -----
+    Edge attributes ``radius`` and ``length`` are scaled. Node attributes
+    ``center`` and ``radius`` are scaled.
+    """
+
+    if factor <= 0:
+        raise ValueError("Scaling factor must be positive, got {}".format(factor))
+
+    indices = list(net.graph.nodes)
 
     c = np.array(list(zip(*nx.get_node_attributes(net.graph, "center").values()))).T
     c *= factor
@@ -806,26 +932,56 @@ def scale(net, factor):
     throats_length = np.array(list(throats_length_dict.values()))
     edges_keys = list(throats_length_dict.keys())
     throats_length *= factor
-    nx.set_edge_attributes(net.graph, dict(zip(edges_keys, list(throats_length))), name="radius")
+    nx.set_edge_attributes(net.graph, dict(zip(edges_keys, list(throats_length))), name="length")
 
-    net.graph.graph["extent"] = list(np.array(net.graph.graph["extent"]) * factor)
-    net.graph.graph["inner_extent"] = list(np.array(net.graph.graph["inner_extent"]) * factor)
+    extent = net.graph.graph.get("extent")
+    if extent is not None:
+        net.graph.graph["extent"] = list(np.array(extent) * factor)
+    inner_extent = net.graph.graph.get("inner_extent")
+    if inner_extent is not None:
+        net.graph.graph["inner_extent"] = list(np.array(inner_extent) * factor)
     net.compute_geometry()
 
 
 def aggregates_nodes_if_too_big(pn, nodes=None, only_smaller=True, maxradius=None):
-    """For each pore in nodes (iterable), the function checks if other pore overlaps.
-    It merges overlapping pores with the larger one.
+    """Merge overlapping pores with the larger one.
+
+    For each pore in ``nodes`` (or all pores if None), checks whether any
+    neighboring pore overlaps (throat length <= 0 and pore distance <= maxradius).
+    Overlapping pores are merged into the larger one.
+
+    Parameters
+    ----------
+    pn : pore_network
+        The pore network model instance.
+    nodes : iterable of int or None, optional
+        Pore node indices to process. If None, all pores are processed,
+        starting from the largest. Default is None.
+    only_smaller : bool, optional
+        If True, only merge with smaller or equal-radius neighbors.
+        Default is True.
+    maxradius : float or None, optional
+        Maximum pore radius. Pores larger than this are capped, and only
+        neighbors within this distance are considered for merging.
+        If None, no radius limit is applied. Default is None.
+
+    Notes
+    -----
+    Requires node attributes ``radius`` and ``center``. Uses
+    ``pore_network.merge_pores`` to merge overlapping pores.
     """
 
     iterate = True
+
+    if maxradius is None:
+        maxradius = float("inf")
 
     while iterate:
         iterate = False
 
         if nodes is None:
             rdict = list(nx.get_node_attributes(pn.graph, "radius").items())
-            # we begin by the larger pores
+            # Process larger pores first
             rdict.sort(key=lambda tup: tup[1], reverse=True)
             l, _ = zip(*rdict)
 
@@ -851,21 +1007,36 @@ def aggregates_nodes_if_too_big(pn, nodes=None, only_smaller=True, maxradius=Non
                                 pn._compute_auto_throat_length(n1, n2) <= 0
                                 and pn.get_pore_distance(n1, n2) <= maxradius
                             ):
-                                # center += pn.graph.nodes[n2]['center']
-                                # counter += 1
                                 pn.merge_pores(n1, n2)
-                                # print('merging',n1,n2,pn.graph.nodes[n1]['radius'])
                                 stop = False
                                 iterate = True
 
 
 def SetFaceBCnodes(net, step=100):
-    """Auto detect pores that are close to the boundary and mark them as boundary nodes
-    Adds category  'x+', 'x-', 'y+', 'y-', 'z+', 'z-' to boundary nodes (a node can have several caterogies)
-    Distance is computed from face to pore center and NOT pore surface
-    it means that big pores are not likely to be marked as boundary pore
-    Each face is divided into (step * step) cells. For each cell, the nearest node is marked as BC node
-    It means that there will be AT MOST (step * step) BC nodes on each face"""
+    """Automatically detect boundary pores and mark them with category labels.
+
+    Pores closest to the boundary faces are tagged with side labels ('x+', 'x-',
+    'y+', 'y-', 'z+', 'z-'). A node can have several categories. Distance is
+    computed from the face to the pore center (not the pore surface), so large
+    pores are less likely to be marked as boundary pores.
+
+    Each face is divided into (step * step) cells. For each cell, the nearest
+    node is marked as a BC node. There will be at most (step * step) BC nodes
+    per face.
+
+    Parameters
+    ----------
+    net : pore_network
+        The pore network model instance.
+    step : int, optional
+        Number of grid cells per side of each face. Default is 100.
+
+    Notes
+    -----
+    Requires graph attribute ``extent`` to be set (e.g. after compute_geometry).
+    Sets graph attribute ``inner_extent`` to the extent value.
+    Node attribute ``category`` is updated for all nodes.
+    """
 
     nodes_indices = list(net.graph.nodes)
     centers = nx.get_node_attributes(net.graph, "center")
@@ -874,8 +1045,11 @@ def SetFaceBCnodes(net, step=100):
 
     net.clear_category()
 
-    extent = net.graph.graph["extent"]
-    # A modifier en prenant la valeur moyenne des distances de chaque face ?
+    extent = net.graph.graph.get("extent")
+    if extent is None:
+        warn("Extent is not set. Cannot set boundary nodes.")
+        return
+    # TODO: consider using the average distance of each face instead
     net.graph.graph["inner_extent"] = extent
 
     x = np.linspace(0, extent[0], step)
@@ -919,10 +1093,36 @@ def SetFaceBCnodes(net, step=100):
 
 
 def SetBCnodes(net, thickness, mode="center"):
-    """Set the nodes category. If nodes are in a layer of given thickness from the boundary, they are tagged as boundary nodes
-    Two methods: either the center or the surface of the pore in the layer"""
+    """Set node categories based on distance from the boundary.
 
-    extent = net.graph.graph["extent"]
+    Pores within a layer of given thickness from the boundary are tagged with
+    side labels ('x+', 'x-', 'y+', 'y-', 'z+', 'z-') or 'inner'. Two methods
+    are available: checking the pore center or the pore surface against the
+    boundary layer.
+
+    Parameters
+    ----------
+    net : pore_network
+        The pore network model instance.
+    thickness : float
+        Thickness of the boundary layer.
+    mode : str, optional
+        Either "center" (pore center in the layer) or "surface" (pore surface
+        touches the layer). Default is "center".
+
+    Notes
+    -----
+    Requires graph attribute ``extent`` to be set.
+    Sets graph attribute ``inner_extent`` to extent - 2 * thickness.
+    Node attribute ``category`` is replaced for all nodes.
+    Uses ``isinside`` (center mode) or ``isinside_surface`` (surface mode)
+    from pnm.utils.
+    """
+
+    extent = net.graph.graph.get("extent")
+    if extent is None:
+        warn("Extent is not set. Cannot set boundary nodes.")
+        return
     net.graph.graph["inner_extent"] = list(np.array(extent) - 2 * thickness)
 
     for n in net.graph.nodes:

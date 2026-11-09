@@ -104,3 +104,21 @@ Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing 
 ### Docstrings:
 - `add_periodic_throats`: complete English docstring (NumPy style).
 - French comments in `add_periodic_throats` preserved as requested.
+
+## Status (Transformation.py - COMPLETED - all functions)
+### Additional bugs fixed:
+4. **`scale`** (line ~908): edge `length` scaled using `name="radius"` instead of `name="length"` → throat length overwritten with radius values. Fixed to `name="length"`. Also `extent`/`inner_extent` KeyError guarded with `.get()`. Added `factor > 0` validation.
+5. **`aggregates_nodes_if_too_big`** (line ~967): `maxradius=None` default used in `radius > maxradius` and `distance <= maxradius` → TypeError. Now defaults to `float("inf")` when None.
+6. **`SetFaceBCnodes`** (line ~1030): `extent = net.graph.graph["extent"]` → KeyError. Now `.get("extent")` with None guard + warn.
+7. **`SetBCnodes`** (line ~1099): `extent = net.graph.graph["extent"]` → KeyError. Now `.get("extent")` with None guard + warn.
+
+### Additional bugs fixed in `invasion_percolation`:
+- `box` list mutated in place → now a copy is made.
+- `pn.graph.graph["bbox"]` / `pn.graph.graph["extent"]` KeyError → `.get()` with None guard + warn.
+
+### Additional bugs fixed in `assemble_pnm`:
+- `pn1.graph.graph["graph_type"]` / `pn1.graph.graph["bbox"]` / `pn1.graph.graph["spacing"]` / `pn2.graph.graph["bbox"]` KeyError → `.get()` with None guard + warn.
+
+### Docstrings added (all remaining functions):
+- `invasion_percolation`, `assemble_pnm`, `connect_pores`, `scale`, `aggregates_nodes_if_too_big`, `SetFaceBCnodes`, `SetBCnodes`: complete English docstrings (NumPy style).
+- French comments translated to English.
