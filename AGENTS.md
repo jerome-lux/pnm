@@ -23,9 +23,6 @@ pnm/
     diffusion.py       # molecular_diffusion, molecular_diffusion_deprecated (formerly MDiff.py)
     TPFlow.py          # TPFlow (two-phase flow)
     percolation.py     # mercury_intrusion (formerly InvPerc.py)
-  Tools/
-    net_renderer.py
-    2D-network-viewer.py
 ```
 
 ## Build Configuration
