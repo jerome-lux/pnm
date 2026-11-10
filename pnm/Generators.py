@@ -226,12 +226,13 @@ def random_PNM(
     min_neighbors_factor=2,
     sort_by_radius=False,
     packing_method="kdtree",
-    nb_trials=100,
+    nb_trials=200,
     max_unallocated_frac=0.05,
     packing_verbose=False,
     pool_size=4096,
     tree_rebuild_interval=1024,
     voxel_resolution=96,
+    seed=None,
 ):
     """Generate a random packing of pores following the given radius distribution rdist with a target porosity "porosity"
     Initial box extent are given, but can be modified dynamically to get the correct porosity
@@ -263,8 +264,16 @@ def random_PNM(
         "kdtree_importance"). Default is 1024.
     voxel_resolution: number of voxels per side of the occupancy map (used by
         "kdtree_importance" only). Default is 96.
+    seed: random seed for reproducible generation. If given, the global numpy random state
+        is seeded (radius draws) and, for the "kdtree"/"kdtree_importance" methods, the
+        internal pool-sampling generator is also seeded; packing restarts then use
+        deterministic child streams derived from the same seed, so a seeded run is fully
+        reproducible even when it restarts. Default is None (non-deterministic).
     TODO: use a sratio distribution instead of a constant value
     """
+
+    if seed is not None:
+        np.random.seed(seed)  # deterministic radius draws for all packing methods
 
     # Build the distributions_props list for the packing routines.
     # rdist may be passed either as a dict of parameters (the default
@@ -301,6 +310,7 @@ def random_PNM(
             pool_size=pool_size,
             tree_rebuild_interval=tree_rebuild_interval,
             verbose=packing_verbose,
+            seed=seed,
         )
     elif packing_method == "kdtree_importance":
         pn = pnm.random_packing_kdtree_importance(
@@ -317,6 +327,7 @@ def random_PNM(
             tree_rebuild_interval=tree_rebuild_interval,
             verbose=packing_verbose,
             voxel_resolution=voxel_resolution,
+            seed=seed,
         )
     else:
         raise ValueError(
@@ -680,7 +691,16 @@ def _prepare_packing_radii(extent, nbnodes, distributions_props, target_porosity
 
 
 def _candidate_clearances(
-    pool, tree, static_centers, static_radii, recent_centers, recent_radii, large_centers, large_radii, query_dist, extent
+    pool,
+    tree,
+    static_centers,
+    static_radii,
+    recent_centers,
+    recent_radii,
+    large_centers,
+    large_radii,
+    query_dist,
+    extent,
 ):
     """Compute for each candidate point the largest sphere radius that can be centered there.
 
@@ -752,9 +772,7 @@ def _candidate_clearances(
 
     if recent_centers:
         rtree = cKDTree(np.asarray(recent_centers))
-        _merge_neighbors(
-            rtree.query_ball_point(pool, query_dist), np.asarray(recent_centers), np.asarray(recent_radii)
-        )
+        _merge_neighbors(rtree.query_ball_point(pool, query_dist), np.asarray(recent_centers), np.asarray(recent_radii))
 
     # Exhaustive check against the (few) large pores, chunked to bound memory.
     if large_centers:
@@ -848,7 +866,11 @@ def _kdtree_packing_engine(
     verbose : bool, optional
         If True, print progress information. Default is True.
     seed : int or None, optional
-        Seed for the random number generator (None = non-deterministic).
+        Seed for the pool-sampling random number generator. If given, restarts use
+        deterministic child streams derived from it, so the run is fully reproducible;
+        None = non-deterministic (fresh entropy per attempt). Note that radius draws always
+        follow the global numpy random state (seed it with ``np.random.seed`` for full
+        reproducibility).
     use_importance_sampling : bool, optional
         If True, sample candidate pools from an occupancy map instead of uniformly in the box.
     voxel_resolution : int, optional
@@ -880,7 +902,18 @@ def _kdtree_packing_engine(
     else:
         gap = float(mindist)
 
-    rng = np.random.default_rng(seed)
+    # Seed handling: a given seed is expanded into one child stream per attempt (initial run +
+    # up to 5 restarts), so that seeded runs are fully reproducible even when they restart.
+    # Unseeded runs keep fresh entropy for every attempt. ``seed`` may be an int/array of ints
+    # or a SeedSequence instance passed down by a parent run's restart logic.
+    if seed is not None:
+        ss = seed if isinstance(seed, np.random.SeedSequence) else np.random.SeedSequence(seed)
+        _child_seeds = ss.spawn(7)
+        rng = np.random.default_rng(_child_seeds[0])
+    else:
+        _child_seeds = None
+        rng = np.random.default_rng(None)
+
     nbnodes_in = nbnodes
     nbnodes = radii.size
     total_volume = float(np.prod(extent_scaled))
@@ -902,7 +935,13 @@ def _kdtree_packing_engine(
     # 2. Optional occupancy map (importance sampling, option B)
     # ------------------------------------------------------------------
     if use_importance_sampling:
-        n_vox = int(min(voxel_resolution, max(16.0, extent_scaled.min() / (2.0 * min_radius + gap))))
+        # Cap the grid so voxels are not smaller than 2*min_radius+gap; skip the cap when the
+        # minimum radius is (numerically) zero, where it would be meaningless.
+        min_voxel_size = 2.0 * min_radius + gap
+        if min_voxel_size > 0:
+            n_vox = int(min(voxel_resolution, max(16.0, extent_scaled.min() / min_voxel_size)))
+        else:
+            n_vox = int(voxel_resolution)
         h = extent_scaled / n_vox  # voxel size per axis
         n_vox_total = n_vox**3
         occ = np.zeros(n_vox_total)  # occupied volume per voxel
@@ -1009,7 +1048,10 @@ def _kdtree_packing_engine(
             tree_rebuild_interval=tree_rebuild_interval,
             max_empty_pools=max_empty_pools,
             verbose=verbose,
-            seed=None,  # a restart must not reproduce the same failure
+            # A restart must not reproduce the same failure: unseeded runs get fresh entropy;
+            # seeded runs use the next deterministic child stream (see _child_seeds above), so
+            # a seeded run stays fully reproducible even when it restarts.
+            seed=None if _child_seeds is None else _child_seeds[_restart_count + 1],
             _restart_count=_restart_count + 1,
         )
 
@@ -1198,7 +1240,11 @@ def random_packing_kdtree(
     verbose : bool, optional
         If True, print progress information. Default is True.
     seed : int or None, optional
-        Seed for the random number generator (None = non-deterministic).
+        Seed for the pool-sampling random number generator. If given, restarts use
+        deterministic child streams derived from it, so the run is fully reproducible;
+        None = non-deterministic (fresh entropy per attempt). Note that radius draws always
+        follow the global numpy random state (seed it with ``np.random.seed`` for full
+        reproducibility).
 
     Returns
     -------
@@ -1302,7 +1348,11 @@ def random_packing_kdtree_importance(
     verbose : bool, optional
         If True, print progress information. Default is True.
     seed : int or None, optional
-        Seed for the random number generator (None = non-deterministic).
+        Seed for the pool-sampling random number generator. If given, restarts use
+        deterministic child streams derived from it, so the run is fully reproducible;
+        None = non-deterministic (fresh entropy per attempt). Note that radius draws always
+        follow the global numpy random state (seed it with ``np.random.seed`` for full
+        reproducibility).
     voxel_resolution : int, optional
         Number of voxels per side of the occupancy map. It is capped so that voxels are not
         smaller than 2 * min_radius + gap (finer would be useless) and floored at 16.

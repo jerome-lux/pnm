@@ -52,7 +52,9 @@ pnm/
 - No existing test suite found.
 
 ## Current Focus
-Refactor/improve `PNM.py`: fix bugs, add English docstrings (translate existing French comments), verify logic. Then proceed to Generators.py, Transformation.py, Algorithms.
+All core modules refactored and optimized: PNM.py, Generators.py (fast kdtree packing + reproducible `seed`), Transformation.py (`add_throats_by_surf` ~2.5× faster, same acceptance decisions), Algorithms (mercury_intrusion, molecular_diffusion), Visualization.py. Examples notebook validated.
+Scaling validated up to N=1e5: packing ~11 s (sub-linear); throat generation ~100 s is now the dominant cost at that scale (see Generators status).
+Remaining optional work: further `add_throats_by_surf` speedup at very large N (would require a behavior change or vectorized acceptance scan).
 
 ## Status (PNM.py - COMPLETED)
 ### Bugs fixed:
@@ -124,8 +126,57 @@ Discovered while writing the new routines; fixed only in the shared helper `_pre
 
 - **Speedup: ~10.6× on average, up to ~29× vs the slowest baseline run.**
 - Baseline time is highly draw-dependent (4.5–51 s) because the box size varies with the random radii draw (extent 4.75–31.7 in these runs); one run even failed to place the largest pore (porosity 0.239). The new algorithms are nearly constant-time per network (~1.7–2 s) regardless of box size, and always reach exactly the target porosity with all requested pores placed.
-- **A vs B at porosity 0.35**: importance sampling is slightly *slower* (voxel sampling + map update overhead outweighs the gain when free space is still abundant). The expected crossover where B wins is higher target porosity / larger N; to be re-benchmarked if needed.
+- **A vs B at porosity 0.35**: importance sampling is slightly *slower* (voxel sampling + map update overhead outweighs the gain when free space is still abundant). The expected crossover where B wins is higher target porosity / larger N; see the N=20000 benchmark below — not reached yet at this porosity.
 - Correctness verified at N=10000: exhaustive pair check (cKDTree `query_pairs`, ~3e7 pairs) found **zero overlaps** for both new algorithms (worst surface margin > 0), all pores inside the box. End-to-end `random_PNM(packing_method="kdtree"/"kdtree_importance")` validated (throats + periodic links + geometry complete).
+
+### Benchmark: N=20000 (same GM1.csv pipeline, e=1.5, PRTRR=2.0, porosity 0.35)
+4 runs per algorithm, fixed seeds (radii draws + pool sampling), packing routines timed directly (pores only).
+
+| Algorithm | Mean time | Std dev | Pores placed (per run) | Porosity (per run) |
+|-----------|-----------|---------|------------------------|--------------------|
+| `random_packing_kdtree` (A) | **2.55 s** | 0.07 s | 20000 ×4 | 0.3500 ×4 |
+| `random_packing_kdtree_importance` (B) | **2.75 s** | 0.12 s | 20000 ×4 | 0.3500 ×4 |
+
+- **Scaling N=1e4 → 2e4**: A goes 1.73 s → 2.55 s (×1.47 for a 2× pore count, sub-linear); B goes 1.89 s → 2.75 s (×1.46).
+- **A vs B at N=2e4, porosity 0.35**: A still ~7% faster — the importance-sampling crossover is not reached at this target porosity; it should appear at higher porosity where free space becomes scarce.
+- Correctness re-verified at N=20000 with a two-level exact check (top 1% "large" pores checked exhaustively, all other pairs covered by a bounded-radius `query_pairs` of ~5e3 relevant pairs): **zero overlaps** for both algorithms (worst surface margin +3.7e-6 / +3.0e-7), all pores inside the box (min box margin ~1.1e-3).
+- **End-to-end `random_PNM(packing_method="kdtree")` at N=20000** (packing + throats + periodic links + geometry): **16.9 s** total → 27380 throats, total porosity 0.394 (pore-body 0.35 + throat contribution). Packing itself is only ~15% of the wall time; throat generation dominates.
+
+### Benchmark: N=100000 (same GM1.csv pipeline, e=1.5, PRTRR=2.0, porosity 0.35)
+Single run per algorithm, seed=7 (radii + pools), packing timed directly; throats with the optimized `add_throats_by_surf` (sratio=0.5, minc=2, maxc=512).
+
+| Algorithm | Pack time | Pores placed | Porosity | Throat gen time | Throats | Mean degree |
+|-----------|-----------|--------------|----------|-----------------|---------|-------------|
+| `random_packing_kdtree` (A) | **11.2 s** | 100000 | 0.3500 | 99.7 s | 469634 | 9.39 |
+| `random_packing_kdtree_importance` (B) | **12.0 s** | 100000 | 0.3500 | 99.7 s | 468042 | 9.36 |
+
+- **Scaling N=2e4 → 1e5 (×5 pore count)**: A goes 2.55 s → 11.2 s (×4.4, sub-linear); B goes 2.75 s → 12.0 s (×4.4).
+- Correctness at N=1e5: two-level exact check (~5.2e5 pairs) found **zero overlaps** for both algorithms (worst surface margin +1.07e-3), all pores inside the box (min margin +1.07e-3).
+- Throat generation is now the dominant cost at this scale (~11 s packing vs ~100 s throats): pass 1 casts a wide net per pore (center distance < `2*r1 + max_pore_radius`), so each candidate list holds O(10³) pores and must be sorted before the sequential acceptance scan. This is inherent to preserving the original acceptance decisions; measured scaling ~O(N^1.8). If further speedup is needed, truncating pass-1 candidates (a behavior change) or vectorizing the acceptance scan are the options.
+
+### Performance optimization in `add_throats_by_surf` (Transformation.py)
+Rewritten for speed while preserving the original acceptance decisions:
+- **sklearn `KDTree` → scipy `cKDTree`** (no per-call input validation overhead).
+- **Precomputed numpy state**: radii, centers, degrees and covered surface areas are plain arrays indexed by position in `nodelist`; the per-pore corrected ratio (`border_correction`) is computed once instead of on every candidate test.
+- **Vectorized candidate lookup + stable argsort** (numpy) replaces the per-pore Python tuple list built from sklearn query results; progress print throttled to ~100 updates per pass.
+- The sequential acceptance loop stays in Python (state updates make it inherently sequential).
+
+Benchmark on a 7500-pore GM1.csv network (e=1.5, PRTRR=2.0, sratio=0.5, minc=2, maxc=512), original vs optimized:
+- **Speedup ~2.5×** (2.49 s → 1.00 s).
+- Edge sets agree on **99.6%** of throats (34955 common out of ~35k); all common edges have **identical throat radii**. The small symmetric difference (~115 old-only / ~163 new-only) comes from tie-breaking: when two candidates have exactly equal surface distance, sklearn's and scipy's query orderings differ, so the stable sort resolves ties differently. Both networks are connected with nearly identical degree statistics (mean 9.35 vs 9.36).
+
+### Reproducibility of kdtree packing (`seed` parameter)
+Two gaps found and fixed while validating the optimization:
+1. **`random_PNM` did not expose a seed**: pool sampling used an unseeded `default_rng(None)` even when radii were seeded, so "same seed" runs produced different networks. `random_PNM(..., seed=...)` now seeds the global numpy state (radius draws) and forwards `seed` to both kdtree packers.
+2. **Restarts broke reproducibility**: `_maybe_restart` always passed `seed=None`, so any run that restarted was non-reproducible even with a seed (verified: a seed-7 draw at N=7500 restarts twice). Now the engine expands the seed into child streams via `np.random.SeedSequence(seed).spawn(7)` — one per attempt (initial + up to 5 restarts); unseeded runs keep fresh entropy.
+
+Verified across separate processes with different `PYTHONHASHSEED` values:
+- Packing is bit-reproducible including the two restarts (identical radii sequence and center hash).
+- End-to-end `random_PNM(seed=7)` at N=5000 (GM1 pipeline): identical pore geometry, throat set and periodic links in both processes.
+- The original `add_throats_by_surf` is deterministic given an identical input graph (identical edge counts/stats across processes) — earlier apparent non-determinism was caused by the unseeded pool sampling above.
+
+### Bug fix in `random_packing_kdtree_importance`
+- Voxel-grid cap `extent.min() / (2*min_radius + gap)` raised a divide-by-zero RuntimeWarning when `min_radius ≈ 0` (e.g. with the default distribution). Now guarded: the cap is skipped and `voxel_resolution` is used as-is in that degenerate case.
 
 ## Status (Transformation.py - COMPLETED)
 ### Bugs fixed in `add_throats_by_surf`:
