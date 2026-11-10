@@ -183,3 +183,11 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+### PNM project ###
+# Generated networks and images (regenerable outputs)
+examples/networks/
+# Parametric study results (regenerable via examples/param_study.py)
+examples/param_study_results/
+# Kilo local state
+.kilo/
