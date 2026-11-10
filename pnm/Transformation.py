@@ -297,8 +297,10 @@ def assemble_pnm(pn1, pn2, axis="x", ratio=1, minc=3, maxc=np.inf, BCgridsize=10
             newpnm, nodes=nodes_to_connect1, ratio=ratio, minc=minc, maxc=maxc, sort_by_radius=False, PRTRR=PRTRR
         )
 
-    # Update geometry
-    newpnm.compute_geometry(autothroats=True)
+    # Update geometry: complete only the throats missing radius/length (defensive),
+    # without overwriting the PRTRR-based radii of pre-existing throats.
+    newpnm.complete_missing_throat_geometry()
+    newpnm.compute_geometry(autothroats=False)
 
     return newpnm
 
@@ -321,8 +323,9 @@ def connect_pores(pn, nbunch1, nbunch2):
 
     Notes
     -----
-    Edge attribute ``radius`` is set on each new throat (auto-computed as
-    min(r(n1), r(n2))). Throat length is NOT set here.
+    Each new throat is created via :meth:`pore_network.add_throat` without explicit
+    geometry, so both ``radius`` (auto-computed as min(r(n1), r(n2))) and ``length``
+    are set automatically.
     Requires ``center`` attribute on all nodes in nbunch1 and nbunch2.
     """
 

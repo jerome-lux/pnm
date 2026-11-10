@@ -212,10 +212,100 @@ class pore_network:
 
         return network
 
+    @staticmethod
+    def _to_serializable(value, array_as_list=True):
+        """Recursively convert numpy containers/scalars to plain Python types.
+
+        NetworkX text formats (GML, GEXF) only accept str/int/float attribute values:
+        numpy arrays and integer scalars raise a ``NetworkXError`` / ``TypeError``.
+
+        Parameters
+        ----------
+        value : object
+            Attribute value to convert.
+        array_as_list : bool, optional
+            If True (GML), numpy arrays become nested Python lists — the GML writer emits
+            them as repeated key/value lines and the reader parses them back into lists.
+            If False (GEXF), arrays and lists are stringified because GEXF interprets list
+            values as "dynamic" time-series data. Default is True.
+
+        Returns
+        -------
+        object
+            Equivalent value using only plain Python types (list, int, float, bool, str).
+        """
+        if isinstance(value, np.ndarray):
+            return value.tolist() if array_as_list else str(value.tolist())
+        if isinstance(value, (list, tuple)):
+            # GEXF interprets any list as "dynamic" time-series data ((val, start, end) tuples),
+            # so lists must be stringified there; GML writes them natively as repeated values.
+            converted = [pore_network._to_serializable(v, array_as_list) for v in value]
+            return converted if array_as_list else str(converted)
+        if isinstance(value, dict):
+            return {k: pore_network._to_serializable(v, array_as_list) for k, v in value.items()}
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.bool_):
+            return bool(value)
+        return value
+
+    def _sanitized_copy(self, array_as_list=True):
+        """Return a shallow copy of the graph with attributes converted to plain Python types.
+
+        The live graph is not modified: ``Graph.copy()`` provides independent node/edge/graph
+        attribute dicts. Node ids that are not int/float/str (e.g., numpy integers from
+        ``np.arange`` before ``compute_geometry`` relabels) are converted, since the GML writer
+        rejects them; attributes with a None value ("unset") are dropped because neither GML nor
+        GEXF has a null representation.
+
+        Parameters
+        ----------
+        array_as_list : bool, optional
+            Forwarded to ``_to_serializable`` (True for GML, False for GEXF). Default is True.
+
+        Returns
+        -------
+        networkx.Graph
+            A copy of the graph whose node ids and attributes use only plain Python types.
+        """
+        G = self.graph.copy()
+
+        # The GML writer requires node ids to be int/float/str (GEXF stringifies them itself).
+        if not all(isinstance(n, (int, float, str)) for n in G.nodes):
+            mapping = {n: (int(n) if isinstance(n, np.integer) else str(n)) for n in G.nodes}
+            G = nx.relabel_nodes(G, mapping)
+
+        def conv(value):
+            return self._to_serializable(value, array_as_list=array_as_list)
+
+        for _, datadict in G.nodes(data=True):
+            for key, val in list(datadict.items()):
+                if val is None:
+                    del datadict[key]
+                else:
+                    datadict[key] = conv(val)
+        for _, _, datadict in G.edges(data=True):
+            for key, val in list(datadict.items()):
+                if val is None:
+                    del datadict[key]
+                else:
+                    datadict[key] = conv(val)
+        for key, val in list(G.graph.items()):
+            if val is None:
+                del G.graph[key]
+            else:
+                G.graph[key] = conv(val)
+        return G
+
     def write(self, outfilename, method="default"):
         """Write the network to a file.
 
-        Node category sets are converted to lists before saving for serialization.
+        Node category sets are converted to lists before saving for serialization. For the text
+        formats (GML, GEXF), a sanitized copy of the graph is written: numpy arrays/scalars in
+        node/edge/graph attributes are converted to plain Python types (arrays become lists in
+        GML and strings in GEXF) so that ``nx.write_gml`` / ``nx.write_gexf`` do not fail on them.
 
         Parameters
         ----------
@@ -246,9 +336,9 @@ class pore_network:
                 return
 
         if method == "gml" or method == "default":
-            nx.write_gml(self.graph, outfilename + ".gml")
+            nx.write_gml(self._sanitized_copy(array_as_list=True), outfilename + ".gml")
         elif method == "gexf":
-            nx.write_gexf(self.graph, outfilename + ".gexf")
+            nx.write_gexf(self._sanitized_copy(array_as_list=False), outfilename + ".gexf")
 
     def save_as_ascii(self, outfilename):
         """Write the network in a text file using the following format:
@@ -606,6 +696,30 @@ class pore_network:
         """
         self.set_auto_throats_length()
         self.set_auto_throats_radius()
+
+    def complete_missing_throat_geometry(self):
+        """Set radius and/or length only on throats that are missing them.
+
+        Unlike :meth:`automatic_geometry`, existing values are never overwritten, so
+        PRTRR-based radii set by ``add_throats_by_surf`` (or any custom geometry) are
+        preserved. Periodic throats without a length are left untouched, mirroring
+        :meth:`set_auto_throats_length`.
+
+        Returns
+        -------
+        int
+            Number of throats that were missing at least one attribute and got completed.
+        """
+        n_completed = 0
+        for n1, n2 in self.graph.edges:
+            d = self.graph[n1][n2]
+            if "radius" not in d or "length" not in d:
+                if "radius" not in d:
+                    d["radius"] = self._compute_auto_throat_radius(n1, n2)
+                if "length" not in d and not d.get("periodic", False):
+                    d["length"] = self._compute_auto_throat_length(n1, n2)
+                n_completed += 1
+        return n_completed
 
     def compute_geometry(self, autothroats=False):
         """Compute all geometry properties and check completeness.
