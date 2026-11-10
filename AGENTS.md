@@ -284,10 +284,16 @@ Complete tutorial notebook demonstrating the full PNM workflow:
 1. Read experimental MIP data from CSV files (`examples/data/`)
 2. Compute pore diameter threshold (cumulative probability) and cumulative pore/throat distributions
 3. Define model parameters (npores, e, PRTRR, sratio, minc, maxc) in an easily modifiable cell
-4. Generate a random pore network using fast cell-list packing (`random_PNM` with `packing_method="cell"`)
+4. Generate a random pore network using fast kdtree packing (`random_PNM` with `packing_method="kdtree"`, default)
 5. Compare experimental vs generated pore and throat distributions (visualized)
 6. Mercury intrusion simulation (`mercury_intrusion`) comparing experimental vs simulated intrusion curves
 7. 3D visualization with `Fast3DViewer` and image saving
 
 Generated networks and images are saved in `examples/networks/`.
 Notebook validated by execution (`jupyter nbconvert --execute`) with no errors.
+
+### `examples/Simulation.ipynb`
+Working notebook for molecular diffusion simulations: loads a generated network from `examples/networks/`, runs `pnm.molecular_diffusion` (per direction), and visualizes the resulting concentration field with `Fast3DViewer`. Includes reference notes on effective relative diffusion coefficients for CEM-V pastes (~2.6e-4 to 2.8e-4, T. Sanchez).
+
+### `examples/data/`
+Experimental MIP data files (GM1.csv, GM2.csv, MP.csv, PCI.csv, PCV.csv) used by the notebooks; committed so examples are reproducible.
