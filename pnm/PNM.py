@@ -93,6 +93,13 @@ class pore_network:
             self.throats_volume = 0
         else:
             self.graph = network
+            # Text formats (GML/GEXF) deserialize the node "category" sets as lists; restore
+            # the documented type so that set operations on categories keep working after a
+            # file round-trip (e.g. add_throats_by_surf border correction, merge_pores).
+            for _, datadict in self.graph.nodes(data=True):
+                cat = datadict.get("category")
+                if isinstance(cat, (list, tuple, frozenset)):
+                    datadict["category"] = set(cat)
             self.compute_geometry()
 
     def __getitem__(self, n):
@@ -139,7 +146,7 @@ class pore_network:
         elif method == "gexf":
             return cls(network=nx.read_gexf(inputfilename))
         elif method == "pickle":
-            with open(inputfilename, 'rb') as infile:
+            with open(inputfilename, "rb") as infile:
                 return cls(network=pickle.load(infile))
 
     @classmethod
@@ -202,9 +209,7 @@ class pore_network:
                     pj -= 1
 
                 if data:
-                    network.add_throat(
-                        pi, pj, radius=float(t[2]), length=float(t[3]), sw=float(t[4]), glabel=int(t[5])
-                    )
+                    network.add_throat(pi, pj, radius=float(t[2]), length=float(t[3]), sw=float(t[4]), glabel=int(t[5]))
                 else:
                     network.add_throat(pi, pj, radius=float(t[2]), length=float(t[3]))
 
@@ -236,6 +241,10 @@ class pore_network:
         """
         if isinstance(value, np.ndarray):
             return value.tolist() if array_as_list else str(value.tolist())
+        if isinstance(value, (set, frozenset)):
+            # Sets are unordered; sort for a deterministic serialization order.
+            converted = [pore_network._to_serializable(v, array_as_list) for v in sorted(value)]
+            return converted if array_as_list else str(converted)
         if isinstance(value, (list, tuple)):
             # GEXF interprets any list as "dynamic" time-series data ((val, start, end) tuples),
             # so lists must be stringified there; GML writes them natively as repeated values.
@@ -302,10 +311,11 @@ class pore_network:
     def write(self, outfilename, method="default"):
         """Write the network to a file.
 
-        Node category sets are converted to lists before saving for serialization. For the text
-        formats (GML, GEXF), a sanitized copy of the graph is written: numpy arrays/scalars in
-        node/edge/graph attributes are converted to plain Python types (arrays become lists in
-        GML and strings in GEXF) so that ``nx.write_gml`` / ``nx.write_gexf`` do not fail on them.
+        The live graph is NOT modified: for the text formats (GML, GEXF), a sanitized copy of
+        the graph is written in which numpy arrays/scalars and node category sets are converted
+        to plain Python types (arrays become lists in GML and strings in GEXF; sets become
+        sorted lists) so that ``nx.write_gml`` / ``nx.write_gexf`` do not fail on them. The
+        pickle format stores the graph as-is (sets included).
 
         Parameters
         ----------
@@ -318,20 +328,8 @@ class pore_network:
 
         method = method.lower()
 
-        # Ensure that some graph attributes are converted to list before saving
-        extent = self.graph.graph.get("extent")
-        if extent is not None:
-            self.graph.graph["extent"] = list(extent)
-        inner_extent = self.graph.graph.get("inner_extent")
-        if inner_extent is not None:
-            self.graph.graph["inner_extent"] = list(inner_extent)
-
-        # transform category attributes [set] to list
-        bcattr = {k:list(v) for k, v in nx.get_node_attributes(self.graph, "category").items()}
-        nx.set_node_attributes(self.graph, bcattr,"category")
-        
         if method == "pickle":
-            with open(outfilename + ".pnm", 'wb') as f:
+            with open(outfilename + ".pnm", "wb") as f:
                 pickle.dump(self.graph, f, pickle.HIGHEST_PROTOCOL)
                 return
 
@@ -371,7 +369,7 @@ class pore_network:
             Path to the output ascii file.
         """
 
-        with open(outfilename, "w", encoding='utf-8') as netfile:
+        with open(outfilename, "w", encoding="utf-8") as netfile:
             extent = self.graph.graph.get("extent")
             if extent is None:
                 warn("Extent is not set. Cannot save as ascii.")
@@ -566,7 +564,7 @@ class pore_network:
 
         self.graph.graph["bbox"] = [xmin, ymin, zmin, xmax, ymax, zmax]
 
-        self.graph.graph["extent"] = [0., 0., 0.]
+        self.graph.graph["extent"] = [0.0, 0.0, 0.0]
         self.graph.graph["extent"][0] = abs(xmax - xmin)
         self.graph.graph["extent"][1] = abs(ymax - ymin)
         self.graph.graph["extent"][2] = abs(zmax - zmin)
@@ -726,7 +724,8 @@ class pore_network:
 
         Steps:
         1. Reset volume accumulators.
-        2. Remove isolated pores.
+        2. Remove isolated pores (only when the graph has at least one throat — an edge-less
+           graph is a valid pore-only network, not debris).
         3. Relabel nodes to consecutive integers (note: this breaks external
            references to old node labels).
         4. Check that all pores have radius and center attributes.
@@ -751,7 +750,10 @@ class pore_network:
 
         self.geom_complete = True
 
-        self.remove_isolated_pores()
+        # An edge-less graph is a valid pore-only network (every node has degree 0 by definition);
+        # only clean up isolated pores when throats exist, otherwise this would delete everything.
+        if self.graph.number_of_edges() > 0:
+            self.remove_isolated_pores()
 
         self.graph = nx.convert_node_labels_to_integers(self.graph)
 
@@ -1008,7 +1010,13 @@ class pore_network:
             n += 1
 
         self.graph.add_node(
-            n, radius=radius, center=center, volume=4 * np.pi * radius**3 / 3, category=category, periodic=periodic, **kwargs
+            n,
+            radius=radius,
+            center=center,
+            volume=4 * np.pi * radius**3 / 3,
+            category=category,
+            periodic=periodic,
+            **kwargs,
         )
 
     def add_throat(self, n1, n2, radius=None, length=None, periodic=False, pdir="none", **kwargs):
@@ -1224,11 +1232,99 @@ class pore_network:
         # val = nx.get_node_attributes(self.graph,'category')
         # return filter(lambda n: category in val[n], self.graph.nodes)
 
+    def average_connectivity(self):
+        """Return the mean pore connectivity of the network.
+
+        The average connectivity is the mean node degree, i.e. twice the
+        number of throats divided by the number of pores (2*E/N). This is the
+        standard "Average Connectivity" reported by :meth:`write_props`.
+
+        Note
+        ----
+        This is NOT ``nx.average_neighbor_degree``, which computes for each
+        node the average degree of its *neighbors* — a different, per-node
+        quantity.
+
+        Returns
+        -------
+        float
+            Mean connectivity; 0.0 if the network has no pores.
+        """
+        n_nodes = self.graph.number_of_nodes()
+        if n_nodes == 0:
+            return 0.0
+        return 2.0 * self.graph.number_of_edges() / n_nodes
+
+    def connectivity_distribution(self, bins=None):
+        """Return the pore-connectivity (node degree) distribution as counts.
+
+        Degrees are binned on a **dyadic** (powers-of-two) scale by default:
+        [0, 1), [1, 2), [2, 4), [4, 8), [8, 16), ... — small connectivities,
+        where most pores sit, keep high resolution while the heavy tail of
+        large-pore (hub) connectivities is still covered:
+
+            edges, counts = pn.connectivity_distribution()             # dyadic bins
+            edges, counts = pn.connectivity_distribution(bins=50)      # 50 geometric bins
+            edges, counts = pn.connectivity_distribution(bins=my_edges)  # custom edges
+
+        The first bin always spans [0, 1), so isolated pores (degree 0) are
+        included; the last edge is exactly the maximum degree, so its bin is
+        inclusive. ``sum(counts)`` therefore equals the number of pores. To
+        recover exact per-integer counts instead, pass explicit linear edges,
+        e.g. ``bins=np.arange(-0.5, max_deg + 1.5)``.
+
+        Parameters
+        ----------
+        bins : int or array-like of float or None, optional
+            If None (default), dyadic bins [0, 1), [1, 2), [2, 4), ... up to
+            the maximum degree are used. If an integer, that many geometrically
+            spaced bins from degree 1 to the maximum degree (plus the leading
+            [0, 1) bin). If an array-like, used directly as histogram bin edges.
+
+        Returns
+        -------
+        edges : numpy.ndarray of float
+            Bin edges actually used for the histogram.
+        counts : numpy.ndarray of int
+            Number of pores in each bin. Empty arrays are returned for a
+            network without pores.
+        """
+        degrees = np.fromiter((d for _, d in self.graph.degree()), dtype=np.int64)
+        if degrees.size == 0:
+            return np.array([], dtype=np.float64), np.array([], dtype=np.int64)
+
+        max_deg = int(degrees.max())
+        if bins is None or isinstance(bins, (int, float, np.integer, np.floating)):
+            if max_deg < 2:
+                # Degenerate case (no throats or only degree-1 pores): fall
+                # back to two unit bins.
+                edges = np.array([1.0, 2.0])
+            elif bins is None:
+                # Dyadic ("octave") bins: powers of two up to the maximum
+                # degree; max_deg itself closes the last bin exactly so it
+                # stays inclusive (e.g. [0,1),[1,2),[2,4),...,[64,90]).
+                edges = 2.0 ** np.arange(int(np.floor(np.log2(max_deg))) + 1)
+                if edges[-1] < max_deg:
+                    edges = np.append(edges, float(max_deg))
+
+            else:
+                # n_bins geometrically spaced points from 1 to max_deg;
+                # prepending 0 gives exactly n_bins bins (leading [0, 1) +
+                # n_bins - 1 geometric).
+                edges = np.geomspace(1.0, float(max_deg), int(max(int(bins), 2)))
+
+        else:
+            counts, edges = np.histogram(degrees, bins=bins)
+            return edges, counts
+
+        counts, edges = np.histogram(degrees, bins=edges)
+        return edges, counts
+
     def write_props(self, filename=None):
         """Write network statistics to a JSON file (and print them).
 
         Computes and stores a dictionary of network properties in
-        self.pnmprops: boundary pore counts per direction, number of pores and
+        self.pnmprops: boundary pores per direction, number of pores and
         throats, porosity, pore-body and throat porosity, average connectivity,
         and extent.
 
@@ -1242,10 +1338,7 @@ class pore_network:
         self.pnmprops = {}
         self.pnmprops["Boundary pores"] = {}
         n_nodes = self.graph.number_of_nodes()
-        if n_nodes > 0:
-            avgc = sum([self.graph.degree(n) for n in self.graph.nodes]) / n_nodes
-        else:
-            avgc = 0.0
+        avgc = self.average_connectivity()
         for direction in ["x", "y", "z"]:
             self.pnmprops["Boundary pores"][direction] = len(self.get_pores_by_category([direction + "+"])) + len(
                 self.get_pores_by_category([direction + "-"])
