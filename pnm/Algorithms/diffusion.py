@@ -60,7 +60,8 @@ class molecular_diffusion:
     model : str or None
         Diffusivity model name ("Fick", "Knudsen", or "All").
     throat_model : str or None
-        Throat conductance model name ("throat" or "effective").
+        Throat conductance model name ("throat", "effective", "path",
+        "conduit" or "conduit_shared"; see ``setup_throat_model``).
     A : scipy.sparse.csr_matrix or None
         Coefficient matrix (built by ``setup_coef_matrix``).
     b : numpy.ndarray or None
@@ -376,7 +377,21 @@ class molecular_diffusion:
         -------
         float
             Throat conductance.
+
+        Notes
+        -----
+        For the conduit models ("conduit", "conduit_shared") the conductance is
+        that of three segments in series (pore i half, throat, pore j half),
+        each with its own diffusivity evaluated at the segment's channel radius
+        (per-segment Knudsen): G = 1 / sum_s F_s / D(rho_s), where F_s is the
+        geometric resistance factor of segment s (integral of dx/A(x)).
         """
+        if self.throat_model in ("conduit", "conduit_shared"):
+            resistance = 0.0
+            for factor, rho in self._conduit_segments(n1, n2):
+                if factor > 0.0:
+                    resistance += factor / self.segment_diffusivity(rho)
+            return 1.0 / resistance if resistance > 0.0 else 0.0
         return self.diffusivity(n1, n2) * self.throat_factor(n1, n2)
 
     def setup_diffusivity_model(self, model="Fick", scale=1, **kwargs):
@@ -422,50 +437,143 @@ class molecular_diffusion:
         # Bulk diffusivity (constant given by the user)
         D_Fick = kwargs.get("d_fick", 1)
 
+        # Diffusivity as a function of a local channel radius r. Used directly
+        # by the conduit models (per-segment Knudsen) and, through
+        # self.radius(n1, n2), by the per-edge models.
         if self.model == "Fick":
 
-            def diffusivity(n1, n2):
+            def segment_diffusivity(r):
                 return D_Fick * scale**2
 
         elif self.model == "Knudsen":
 
-            def diffusivity(n1, n2):
-                return self.radius(n1, n2) * D_Knudsen * scale
+            def segment_diffusivity(r):
+                return r * D_Knudsen * scale
 
-        elif self.model == "All":
+        else:  # "All": Fick and Knudsen resistances in series
 
-            def diffusivity(n1, n2):
-                return 1 / (
-                    1 / (D_Fick * scale**2) + 1 / (self.radius(n1, n2) * D_Knudsen * scale)
-                )
+            def segment_diffusivity(r):
+                return 1 / (1 / (D_Fick * scale**2) + 1 / (r * D_Knudsen * scale))
 
+        def diffusivity(n1, n2):
+            return segment_diffusivity(self.radius(n1, n2))
+
+        self.segment_diffusivity = segment_diffusivity
         self.diffusivity = diffusivity
 
-    def setup_throat_model(self, model="throat", alpha=1):
+    def setup_throat_model(self, model="throat", alpha=1, share="area"):
         """Set up the throat conductance (radius) model.
 
         Parameters
         ----------
         model : str, optional
-            Throat model: "throat" (simple throat radius) or "effective"
+            Throat model: "throat" (simple throat radius), "effective"
             (effective radius based on
-            https://doi.org/10.1016/j.micromeso.2013.09.038).
-            Default is "throat".
+            https://doi.org/10.1016/j.micromeso.2013.09.038), "path"
+            (path-length conductance), "conduit" (pore-throat-pore conduit,
+            spheres and cylinders) or "conduit_shared" (conduit with the pore
+            volume partitioned among its throats). See Notes. Default is
+            "throat".
         alpha : float, optional
             Exponent for the "effective" model. Default is 1.
+        share : str, optional
+            Pore-volume partition rule for "conduit_shared": "area" (share of
+            pore i given to throat t is w = r_t^2 / sum_k r_k^2 over the throats
+            of i) or "uniform" (w = 1/degree(i)). Ignored by the other models.
+            Default is "area".
 
         Notes
         -----
         Sets ``self.throat_factor`` to a callable ``throat_factor(n1, n2)``
         and ``self.radius`` to a callable ``radius(n1, n2)``.
+
+        The "conduit" model treats each edge as three resistances in series
+        between the two pore centers (the lumped nodes):
+
+            1/G = F_i/D(rho_i) + F_t/D(r_t) + F_j/D(rho_j),
+
+        * pore half i: the sphere's cross-section pi*(r_i^2 - x^2) integrated
+          from the center (x=0) to the junction with the throat cylinder,
+          x_i = sqrt(r_i^2 - r_t^2):
+              F_i = ln((r_i + x_i)/r_t) / (pi*r_i)
+          (stable closed form of (1/(2 pi r_i)) ln((r_i+x_i)/(r_i-x_i)));
+        * throat: cylinder of radius r_t between the two junctions,
+              F_t = L'_t/(pi*r_t^2),  L'_t = max(|c_i - c_j| - x_i - x_j, 0)
+          (L'_t >= stored gap length L_t; the pore caps inside the cylinder
+          radius belong to the throat);
+        * rho_i = sqrt(x_i/(pi*F_i)) is the equivalent radius of the pore half
+          (uniform cylinder with the same length and resistance); it is used
+          for the per-segment Knudsen diffusivity, so the Knudsen penalty of
+          narrow throats is not applied to the wide pore bodies.
+
+        This is the standard "spheres and cylinders" conduit model (OpenPNM,
+        Gostick et al. 2016; pore-throat-pore series as in Valvatne & Blunt
+        2004). It uses the three radii r_i, r_j, r_t, stays finite when the gap
+        vanishes (G -> 1/(F_i/D + F_j/D)), and gives the pores the finite
+        diffusivity of the fluid they contain instead of treating them as
+        perfect conductors. It does not, however, guarantee Deff/Dinf <= 1:
+        every conduit of a pore uses the pore's full cross-section, so the pore
+        volume is counted ~degree/2 times.
+
+        The "conduit_shared" model is identical except that each pore half's
+        resistance is divided by the share w of the pore assigned to that
+        throat (F_i -> F_i/w_i), with sum_t w_i,t = 1 over the throats of pore
+        i. The conduit volumes then partition the pore space, and a rigorous
+        bound follows (Cauchy-Schwarz: R_c >= l_c^2/(D V_c) for any series
+        conduit of length l_c and volume V_c; Dirichlet principle with the
+        linear test potential; l_c = |c_i - c_j| >= its projection on the flow
+        axis):
+
+            Deff/Dinf <= sum_c V_c / V_box <= (V_pore + V_throat)/V_box,
+
+        up to the small offset of the boundary pores from the box faces. The
+        model is therefore incapable of aberrant (Deff > phi_total*Dinf)
+        results by construction; it is conservative for the small throats of
+        highly connected pores. The Knudsen radius rho_i stays the physical
+        (unshared) one: the partition is a volume-accounting device, not a
+        narrowing of the channel.
+
+        In both conduit models periodic edges use the unwrapped center
+        distance, like "path", so they are nearly inert in open-box Dirichlet
+        simulations.
+
+        The "path" model uses the conductance
+
+            G = D * pi * r_t^2 / L_eff,   L_eff = max(L_t + pi*r_t/2, |c_i - c_j|),
+
+        where L_t is the stored throat (gap) length and |c_i - c_j| the
+        center-to-center distance. Rationale: a lumped node represents the BULK
+        of its pore, so any flow path from bulk i to bulk j traverses an arc of
+        length r_i + L_t + r_j = |c_i - c_j| whose minimum cross-section is the
+        throat area pi*r_t^2; using that full length (instead of the bare gap)
+        bounds the conductance by D*pi*r_t^2/|c_i - c_j|. For PRTRR >= 1 the
+        max() always selects |c_i - c_j|, since pi*r_t/2 <= (pi/4)*min(r_i, r_j)
+        < r_i + r_j. This removes the unphysical divergence of A_t/L_t for
+        near-touching pore pairs (L_t -> 0), which made Deff/Dinf exceed 1 on
+        dense small-pore networks; with it, simulated values fall below the
+        rigorous real-medium bound Deff/Dinf <= phi_total (total void fraction)
+        and in the physically expected range for rocks. For periodic edges the
+        unwrapped center distance is their true separation inside the box, so
+        they no longer act as shortcuts in open-box Dirichlet simulations
+        (a finite sample has no throats crossing its surface). The model is
+        conservative: it underestimates transport relative to the well-mixed-
+        reservoir limit D*pi*r_t^2/(L_t + pi*r_t/2) (disk access resistance,
+        J = 4*D*a*C per mouth).
         """
-        if model not in ["throat", "effective"]:
-            warn("Radius model should be either 'throat' or 'effective'. Using 'throat'.")
+        valid_models = ["throat", "effective", "path", "conduit", "conduit_shared"]
+        if model not in valid_models:
+            warn(f"Radius model should be one of {valid_models}. Using 'throat'.")
             model = "throat"
+        if share not in ("area", "uniform"):
+            warn("share must be 'area' or 'uniform'. Using 'area'.")
+            share = "area"
 
         print("Using", model, "radius model")
 
         self.throat_model = model
+        self.share = share
+        if model == "conduit_shared":
+            self._setup_pore_shares(share)
 
         if model == "throat":
             # Neglecting pore resistance (concentration is constant in pore)
@@ -505,8 +613,111 @@ class molecular_diffusion:
                     + rj * (ri / np.sqrt(ri**2 + lij**2)) ** alpha
                 )
 
+        elif model == "path":
+            # Path-length conductance (see Notes): G = D*pi*r_t^2/L_eff with
+            # L_eff = max(L_t + pi*r_t/2, |c_i - c_j|). For PRTRR >= 1 the
+            # center distance always wins, so near-touching pairs (L_t -> 0) no
+            # longer diverge; periodic edges get their true in-box separation
+            # and stop acting as shortcuts in open-box Dirichlet simulations.
+
+            def throat_factor(ni, nj):
+                edge = self.pn.graph[ni][nj]
+                ci = np.asarray(self.pn.graph.nodes[ni]["center"], dtype=float)
+                cj = np.asarray(self.pn.graph.nodes[nj]["center"], dtype=float)
+                d = float(np.linalg.norm(ci - cj))
+                l_eff = max(edge["length"] + np.pi * edge["radius"] / 2.0, d)
+                return (edge["radius"] ** 2 * np.pi) / l_eff
+
+            def radius(ni, nj):
+                return self.pn.graph[ni][nj]["radius"]
+
+        elif model in ("conduit", "conduit_shared"):
+            # The conduit conductance is not diffusivity * geometric factor: each
+            # segment has its own diffusivity (per-segment Knudsen), so
+            # _flow_coef computes it directly from _conduit_segments. Refuse the
+            # product form so no caller silently gets a different conductance.
+
+            def throat_factor(ni, nj):
+                raise NotImplementedError(
+                    "Conduit models have no separable throat factor; use _flow_coef "
+                    "(series of per-segment resistances, see _conduit_segments)."
+                )
+
+            def radius(ni, nj):
+                return self.pn.graph[ni][nj]["radius"]
+
         self.throat_factor = throat_factor
         self.radius = radius
+
+    def _setup_pore_shares(self, share):
+        """Pre-compute the per-pore normalization of the conduit volume shares.
+
+        Parameters
+        ----------
+        share : str
+            "area": the share of pore i given to throat t is
+            r_t^2 / sum_k r_k^2 over the throats k of pore i, so wide throats
+            drain a larger part of the pore. "uniform": 1/degree(i).
+
+        Notes
+        -----
+        Stores ``self._pore_share_norm`` (numpy array indexed by node): the sum
+        of r_k^2 over incident throats ("area") or the node degree
+        ("uniform"). Nodes are consecutive integers (enforced in __init__).
+        """
+        g = self.pn.graph
+        norm = np.zeros(g.number_of_nodes(), dtype=float)
+        for u, v, data in g.edges(data=True):
+            weight = data["radius"] ** 2 if share == "area" else 1.0
+            norm[u] += weight
+            norm[v] += weight
+        self._pore_share_norm = norm
+
+    def _conduit_segments(self, ni, nj):
+        """Return the series segments of the conduit between pores ni and nj.
+
+        Parameters
+        ----------
+        ni, nj : int
+            Node indices of the two pores.
+
+        Returns
+        -------
+        list of tuple(float, float)
+            ``[(F_i, rho_i), (F_t, r_t), (F_j, rho_j)]`` where F is the
+            geometric resistance factor (integral of dx/A(x), in 1/length) and
+            rho the channel radius used for the per-segment diffusivity. See
+            ``setup_throat_model`` for the formulas. For "conduit_shared" the
+            pore factors are divided by the pore volume share of this throat.
+        """
+        g = self.pn.graph
+        rt = float(g[ni][nj]["radius"])
+        ci = np.asarray(g.nodes[ni]["center"], dtype=float)
+        cj = np.asarray(g.nodes[nj]["center"], dtype=float)
+        dist = float(np.linalg.norm(ci - cj))
+
+        pore_segments = []
+        junctions = 0.0
+        for node in (ni, nj):
+            rp = float(g.nodes[node]["radius"])
+            if rt >= rp:
+                # Throat as wide as the pore: no pore taper, the throat starts
+                # at the center (defensive; impossible for PRTRR >= 1).
+                pore_segments.append((0.0, rp))
+                continue
+            x = np.sqrt(rp * rp - rt * rt)  # center -> junction distance
+            factor = np.log((rp + x) / rt) / (np.pi * rp)
+            rho = np.sqrt(x / (np.pi * factor))  # equivalent uniform radius
+            if self.throat_model == "conduit_shared":
+                norm = self._pore_share_norm[node]
+                w = (rt * rt if self.share == "area" else 1.0) / norm if norm > 0.0 else 1.0
+                factor /= w
+            pore_segments.append((factor, rho))
+            junctions += x
+
+        throat_length = max(dist - junctions, 0.0)
+        throat_factor = throat_length / (np.pi * rt * rt)
+        return [pore_segments[0], (throat_factor, rt), pore_segments[1]]
 
     def add_bc(self, bc_val, nodes, bc_type="Dirichlet"):
         """Set up boundary conditions for a given set of nodes.
