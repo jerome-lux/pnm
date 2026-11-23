@@ -1,5 +1,6 @@
 # coding=utf-8
 import contextlib
+import copy
 import io
 import multiprocessing
 import os
@@ -11,7 +12,15 @@ import networkx as nx
 from pnm import pore_network
 
 import pnm
-from .Stats import distribution
+from .Stats import (
+    distribution,
+    inverse_transform_sampling_from_raw_data,
+    invert_pore_distribution_independent,
+    invert_pore_distribution_kernel,
+    invert_pore_distribution_kernel_budget,
+    invert_pore_distribution_kernel_gamma,
+    invert_pore_distribution_kernel_waterfill,
+)
 from .utils import *
 
 from scipy.spatial import cKDTree
@@ -620,6 +629,221 @@ def parallel_random_PNM(specs, n_jobs=None):
     with ctx.Pool(processes=n_jobs) as pool:
         results = pool.map(_parallel_random_PNM_worker, tasks)
     return list(results)
+
+
+# Named pore-distribution inversions selectable by ``fitted_random_PNM``. The kernel family
+# shares one signature (volumes, midradii, deltaR, e, PRTRR=..., porosity=..., sratio=...),
+# except the parameter-free "kernel_gamma" which takes no step-1 exponent; "independent" takes
+# no geometry arguments. Both are dispatched separately below.
+_INVERSIONS = {
+    "kernel": invert_pore_distribution_kernel,
+    "kernel_budget": invert_pore_distribution_kernel_budget,
+    "kernel_gamma": invert_pore_distribution_kernel_gamma,
+    "kernel_waterfill": invert_pore_distribution_kernel_waterfill,
+}
+
+
+def _inversion_pore_distribution(mip, inversion="kernel_budget", e=1.25, PRTRR=2.0, porosity=0.35, sratio=0.4):
+    """Run the selected pore-distribution inversion and return its pore count distribution.
+
+    Parameters
+    ----------
+    mip : MIPData
+        Windowed experimental throat distribution (``volumes``, ``midradii``, ``deltaR``).
+    inversion : str or callable, optional
+        One of "kernel", "kernel_budget" (default), "kernel_waterfill" or the parameter-free
+        "kernel_gamma" — or the string "independent" for the classical i.i.d. model (which takes
+        no geometry arguments) — or a user-provided callable with the kernel-family signature
+        ``(volumes, midradii, deltaR, e, PRTRR=..., porosity=..., sratio=...) -> (cdist, pdist)``.
+    e : float, optional
+        Step-1 corrective exponent (shared by all inversions except "kernel_gamma", which derives
+        the capillary length from the kernel geometry and ignores it). Default is 1.25.
+    PRTRR : float, optional
+        Pore-to-throat radius ratio; must match the generator call. Default is 2.0.
+    porosity : float, optional
+        Target pore-body porosity of the packing that will be generated. Default is 0.35.
+    sratio : float, optional
+        Surface coverage ratio (fraction of a pore's surface covered by throats). Default is 0.4.
+
+    Returns
+    -------
+    numpy.ndarray
+        Pore count distribution ``pdist`` (one probability per bin, sums to 1).
+
+    Raises
+    ------
+    ValueError
+        If ``inversion`` is an unknown name.
+    RuntimeError
+        If the inversion returns a non-finite or non-normalized distribution.
+    """
+    if callable(inversion):
+        func = inversion
+    elif inversion == "independent":
+        func = invert_pore_distribution_independent
+    else:
+        try:
+            func = _INVERSIONS[inversion]
+        except KeyError:
+            raise ValueError(
+                f"Unknown inversion {inversion!r}; expected one of {sorted(_INVERSIONS) + ['independent']} or a callable."
+            ) from None
+
+    if func is invert_pore_distribution_independent:
+        _, pdist = func(mip.volumes, mip.midradii, mip.deltaR, e=e)
+    elif func is invert_pore_distribution_kernel_gamma:
+        # Parameter-free variant: no step-1 exponent (the capillary length is derived from the
+        # kernel geometry), so ``e`` must not be forwarded.
+        _, pdist = func(
+            mip.volumes, mip.midradii, mip.deltaR,
+            PRTRR=PRTRR, porosity=porosity, sratio=sratio,
+        )
+    else:
+        _, pdist = func(
+            mip.volumes, mip.midradii, mip.deltaR,
+            e=e, PRTRR=PRTRR, porosity=porosity, sratio=sratio,
+        )
+    if not np.all(np.isfinite(pdist)) or abs(float(pdist.sum()) - 1.0) > 1e-6:
+        raise RuntimeError(f"Inversion {inversion!r} produced an invalid pore distribution")
+    return pdist
+
+
+def fitted_random_PNM(
+    mip,
+    npores=250_000,
+    seed=7,
+    porosity=0.35,
+    PRTRR=2.0,
+    inversion="kernel_budget",
+    e=1.25,
+    sratio=0.4,
+    extent=(1.0, 1.0, 1.0),
+    BCgridsize=150,
+    throat_method="surf",
+    order="random",
+    phase1_z=0,
+    phase2_radius_factor=2.0,
+    maxc=1024,
+    pore_cache_path=None,
+):
+    """Generate one pore network fitted to an experimental MIP throat distribution.
+
+    Full pipeline in a single call: (1) invert the experimental throat volume distribution into
+    a pore count distribution with the selected inversion; (2) pack ``npores`` pores from it at
+    target porosity with the kdtree packer; (3) generate throats with :func:`random_PNM`
+    (two-phase "surf" by default, plus periodic boundary throats and geometry). The defaults are
+    the best "budget" recipe of the asym50_95 study: ``kernel_budget`` inversion with e = 1.25 /
+    sratio = 0.4 and two-phase surf order="random", phase1_z=0, phase2_radius_factor=2, maxc=1024
+    (JSD 0.0099 at N = 150k; see doc/pore-distribution-inversion.md §5.5.2).
+
+    Parameters
+    ----------
+    mip : MIPData
+        Windowed experimental throat distribution (e.g. from ``pnm.load_mip_data`` with rmin/rmax,
+        or a cumulative-volume window cut of the full curve).
+    npores : int, optional
+        Number of pores to pack. Default is 250_000.
+    seed : int, optional
+        Random seed. It seeds BOTH the pore radius draws (packing) and — re-seeded independently
+        before throat generation — the throat-generation order, so a run with a cached pore set is
+        bit-identical to one that packed from scratch. Default is 7.
+    porosity : float, optional
+        Target pore-body porosity of the packing (the box is rescaled by the packer to hit it).
+        Must match the inversion call. Default is 0.35.
+    PRTRR : float, optional
+        Pore-to-throat radius ratio: a throat between pores of radii r_i, r_j has radius
+        min(r_i, r_j)/PRTRR. Must match the inversion call. Default is 2.0.
+    inversion : str or callable, optional
+        Pore-distribution inversion to use (see :func:`_inversion_pore_distribution`): "kernel",
+        "kernel_budget" (default), "kernel_waterfill", the parameter-free "kernel_gamma", or
+        "independent". Default is "kernel_budget".
+    e : float, optional
+        Step-1 corrective exponent of the inversion (ignored by the parameter-free "kernel_gamma").
+        Default is 1.25 (budget recipe).
+    sratio : float, optional
+        Surface coverage ratio; passed to BOTH the inversion and the throat generation so model
+        and generator budgets match. Must stay in [0, 1] (fraction of a pore's surface covered by
+        throats). Default is 0.4 (budget recipe).
+    extent : tuple of float, optional
+        Initial box extent; rescaled by the packer to reach ``porosity``. Default is (1, 1, 1).
+    BCgridsize : int, optional
+        Boundary-detection grid resolution (Voronoi labeling of face pores). Default is 150.
+    throat_method : str, optional
+        Throat-generation method forwarded to random_PNM (only "surf" is available). Default is "surf".
+    order : str, optional
+        Phase-2 processing order of the two-phase "surf" method. Default is "random" (budget recipe).
+    phase1_z : int, optional
+        Largest-partner seeding count of the two-phase "surf" method; 0 disables it. Default is 0
+        (best for every recipe on the asym50_95 window).
+    phase2_radius_factor : float, optional
+        Phase-2 candidate-ball factor of the two-phase "surf" method. Default is 2.0 (budget recipe).
+    maxc : int, optional
+        Maximum pore connectivity (zmax) of the throat generation. Default is 1024.
+    pore_cache_path : str or Path or None, optional
+        Pickle path for the packed pore-only network. If it exists, packing (and inversion) is
+        skipped and the cached set is used; otherwise the freshly packed set is saved there before
+        throat generation. Default is None (no caching).
+
+    Returns
+    -------
+    pore_network
+        The generated network (pores + throats), with geometry computed (autothroats=False).
+
+    Notes
+    -----
+    ``porosity``, ``PRTRR`` and ``sratio`` must be consistent between the inversion and this call;
+    they are passed to both here, so a single set of arguments keeps them matched. The packing is
+    always done with the kdtree packer (mindist="auto", restart=True, fit_box=False) — the same
+    settings as the study scripts.
+    """
+    # 1) Pore set: load from cache or invert + pack fresh.
+    if pore_cache_path is not None and Path(pore_cache_path).exists():
+        pn = pore_network.read(str(pore_cache_path), method="pickle")
+    else:
+        pdist = _inversion_pore_distribution(
+            mip, inversion=inversion, e=e, PRTRR=PRTRR, porosity=porosity, sratio=sratio
+        )
+        rdist = partial(
+            inverse_transform_sampling_from_raw_data, pdist, bins=mip.throat_radii * PRTRR, high=np.inf
+        )
+        np.random.seed(seed)  # deterministic radius draws (same convention as random_PNM)
+        pn = pnm.random_packing_kdtree(
+            extent=extent,
+            nbnodes=npores,
+            distributions_props=[({"func": rdist}, 1)],
+            target_porosity=porosity,
+            mindist="auto",
+            BCstep=BCgridsize,
+            restart=True,
+            fit_box=False,
+            max_unallocated_frac=0.05,
+            pool_size=4096,
+            tree_rebuild_interval=1024,
+            verbose=False,
+            seed=seed,
+        )
+        if pore_cache_path is not None:
+            # write() converts category sets to lists in place — save a copy so the live object keeps its sets.
+            copy.deepcopy(pn).write(str(Path(pore_cache_path).with_suffix("")), method="pickle")  # .pnm appended by write()
+
+    # 2) Throat generation: re-seed so the throat order does not depend on whether packing ran above.
+    np.random.seed(seed)
+    return pnm.random_PNM(
+        npores=npores,
+        extent=extent,
+        porosity=porosity,
+        rdist=None,  # ignored: pores= is supplied (packing skipped)
+        pores=pn,
+        sratio=sratio,
+        PRTRR=PRTRR,
+        BCgridsize=BCgridsize,
+        seed=seed,
+        throat_method=throat_method,
+        order=order,
+        phase1_z=phase1_z,
+        phase2_radius_factor=phase2_radius_factor,
+        maxc=maxc,
+    )
 
 
 def random_packing_opt(
