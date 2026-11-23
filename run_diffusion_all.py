@@ -17,6 +17,9 @@ configuration ``<config> = <throat model>[-<share>]-<diffusivity model>-<directi
     summary__<config>.csv     one row per network with Deff/Dinf ratios and timings; rows of
                               networks run earlier with the same configuration are kept (merged
                               by file name), so the summary always covers every simulated network
+    <netname>__<config>_conc.gml   (only with --save-concentrations) copy of the network with
+                              per-direction pore concentration node attributes
+                              (concentration_x/y/z) for field visualization
 
 Networks whose per-network CSV for the same configuration already exists are skipped unless
 ``--force`` is given; runs with different throat/diffusivity models or directions never skip or
@@ -39,6 +42,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import networkx as nx  # noqa: E402
 import numpy as np  # noqa: E402
 import pnm  # noqa: E402
 
@@ -74,6 +78,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--diff-model", default="All", choices=["Fick", "Knudsen", "All"])
     p.add_argument("--solver", default="cg")
     p.add_argument("--tol", type=float, default=1e-8)
+    p.add_argument("--save-concentrations", action="store_true",
+                   help="Also save each network as GML with per-direction pore concentration "
+                        "node attributes (concentration_x/y/z), for field visualization.")
     return p.parse_args(argv)
 
 
@@ -224,6 +231,21 @@ def simulate_one(net_path: Path, out_dir: Path) -> dict:
               f"(Deff/Dinf = {Deff[direction]/Dinf:.4f}, status {status[direction]}) in "
               f"{time.perf_counter()-t0:.0f}s", flush=True)
 
+        # Keep the solved field for visualization (node labels are consecutive integers).
+        if _PARAMS["save_conc"] and solver.x is not None:
+            nx.set_node_attributes(
+                pn.graph, {i: float(v) for i, v in enumerate(solver.x)}, f"concentration_{direction}"
+            )
+
+    # Save a copy of the network carrying every solved concentration field.
+    if _PARAMS["save_conc"]:
+        conc_path = out_dir / f"{net_path.stem}__{_PARAMS['tag']}_conc.gml"
+        t0 = time.perf_counter()
+        # write() appends ".gml" to the given path (same convention as the pore cache).
+        pn.write(str(conc_path.with_suffix("")), method="gml")  # serializes a copy; live graph untouched
+        print(f"[{name}] concentration field saved -> {conc_path.name} "
+              f"in {time.perf_counter()-t0:.0f}s", flush=True)
+
     avgc = sum(pn.graph.degree(n) for n in pn.graph.nodes) / n_nodes
     row_name = _PARAMS["tag"] + "-" + name
 
@@ -283,6 +305,7 @@ def main(argv=None) -> int:
     _PARAMS.update({k: getattr(args, k) for k in
                     ("scale", "bc1", "bc2", "dinf", "ma", "temperature",
                      "throat_model", "share", "diff_model", "solver", "tol")})
+    _PARAMS["save_conc"] = args.save_concentrations
     _PARAMS["directions"] = directions
     tag = config_tag(args.throat_model, args.share, args.diff_model, directions)
     _PARAMS["tag"] = tag

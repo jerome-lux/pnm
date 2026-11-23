@@ -1,0 +1,2 @@
+name;nnodes;nthroats;porosity;avg connectivity;throat model;%BCP-x;%BCP-y;%BCP-z;Deff-x;Deff-y;Deff-z
+conduit-All-xyz-20261122_asym5095_250k_budget_e1.25_sr0.4_rand_seed9;250000;1154605;0.39894518135710116;9.23684;conduit;3.3264;3.2872;3.3432;4.528591500530408e-07;4.514432596925954e-07;4.0604797264070357e-07
