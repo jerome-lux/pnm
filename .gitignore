@@ -191,3 +191,10 @@ examples/networks/
 examples/param_study_results/
 # Kilo local state
 .kilo/
+# Local-only documents, excluded from git sync
+doc/theory.typ
+doc/experiment-summary.typ
+doc/experiment-summary.pdf
+doc/capillary-length-phase2.md
+# Agent working notes — local only, never pushed to the remote repo
+AGENTS.md
