@@ -197,5 +197,7 @@ doc/experiment-summary.typ
 doc/experiment-summary.pdf
 doc/capillary-length-phase2.md
 # Agent working notes — local only, never pushed to the remote repo
-AGENTS.md# Large concentration-field overlays (regenerable via run_diffusion_all.py --save-concentrations, ~300 MB each)
+AGENTS.md
+# Large concentration-field overlays (regenerable via run_diffusion_all.py --save-concentrations, ~300 MB each)
 examples/diffusivity/*_conc.gml
+
