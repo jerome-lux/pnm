@@ -1405,7 +1405,7 @@ def invert_pore_distribution_kernel_budget(
 def _exp_upper_incomplete_gamma(s: float, x):
     """Stable evaluation of ``exp(x) * Gamma(s, x)``, the upper incomplete gamma times its exponential.
 
-    The product appears in the kernel length moment of ``doc/capillary-length-phase2.md`` §5.1::
+    The product appears in the kernel length moment of ``doc/pore-distribution-inversion.md`` §5.6.2::
 
         <s>_ij = D_i * exp(x_ij) * Gamma(4/3, x_ij),   x_ij = ((r_i + r_j)/D_i)**3 > 0.
 
@@ -1558,9 +1558,10 @@ def invert_pore_distribution_kernel_gamma(
     """Predict the pore size distribution from an experimental throat (MIP) distribution with a
     **parameter-free capillary-length correction** derived from the exclusion-kernel geometry.
 
-    This is the "Phase 2" inversion of ``doc/capillary-length-phase2.md``: it replaces the
-    empirical corrective exponent ``e`` of step 1 by a per-class mean capillary length computed
-    from the *same* Poisson-gas model that produces the exclusion kernel (no free parameter —
+    This is the parameter-free "Phase 2" inversion derived in
+    ``doc/pore-distribution-inversion.md`` §5.6: it replaces the empirical corrective exponent
+    ``e`` of step 1 by a per-class mean capillary length computed from the *same* Poisson-gas model
+    that produces the exclusion kernel (no free parameter —
     only ``porosity``, ``sratio`` and ``PRTRR``, exactly as in
     :func:`invert_pore_distribution_kernel`).
 
@@ -1718,8 +1719,7 @@ def invert_pore_distribution_kernel_gamma(
     recalibration lever for the structural small-pore deficit / mid-band excess of the generated
     throat distribution (study: ``examples/study_sratio_profile_150k.py``, results in AGENTS.md).
 
-    Full derivation: ``doc/capillary-length-phase2.md`` (companion to
-    ``doc/pore-distribution-inversion.md``).
+    Full derivation + validation data: ``doc/pore-distribution-inversion.md`` §5.6.
     """
     volumes = np.asarray(volumes, dtype=float).ravel()
     midradii = np.asarray(midradii, dtype=float).ravel()
@@ -1960,7 +1960,7 @@ def invert_pore_distribution_kernel_gamma_hybrid(
     This is :func:`invert_pore_distribution_kernel_gamma` with one change — the per-class mean
     capillary length fed to step 1. The pure derivation has a **turnover**: it peaks near
     ``m_k ~ 0.1 um`` and then declines toward contact in the largest classes (the generator's
-    nearest-neighbor selection among sparse giants, doc/capillary-length-phase2.md §6). A flat or
+    nearest-neighbor selection among sparse giants, doc/pore-distribution-inversion.md §5.6.5). A flat or
     declining step-1 length demands too many large throats per unit volume; through the coupled
     fixed point this shifts pore mass into the largest classes (measured on keep75: 93.8 % vs
     90.2 % of pore volume in pores >= 1 um) and the generated networks then overshoot the >0.5 um
@@ -2013,7 +2013,7 @@ def invert_pore_distribution_kernel_gamma_hybrid(
     beta=0.3 — does not beat ``invert_pore_distribution_kernel`` with e=1.25 (JSD 0.0195) and only
     ties the plain gamma inversion; the structural b1-deficit/b3-excess residual persists for every
     tested beta, so this variant is rejected as a reference recipe and kept for research only. Full
-    analysis: ``doc/capillary-length-phase2.md`` §7.2.
+    analysis: ``doc/pore-distribution-inversion.md`` §5.6.6.
     """
     volumes = np.asarray(volumes, dtype=float).ravel()
     midradii = np.asarray(midradii, dtype=float).ravel()
