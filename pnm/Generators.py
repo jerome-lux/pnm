@@ -244,13 +244,7 @@ def random_PNM(
     sort_by_radius=False,
     minc_search_factor=None,
     large_pair_radius_frac=None,
-    large_pair_radius=None,
-    large_pair_min_connections=None,
-    large_pair_max_gap=2.5,
     large_radius_cutoff=None,
-    large_search_factor=2.0,
-    search_radius_factor2=3.0,
-    minc2=0,
     throat_method="surf",
     phase1_order="decreasing",
     order="increasing",
@@ -288,55 +282,18 @@ def random_PNM(
     minc_search_factor: only used with sort_by_radius=True; widens the pass-0 candidate pool
         to all pores within center distance minc_search_factor * r1 so that large partners
         beyond the immediate neighborhood can be found. Default is None (k nearest neighbors).
-    large_pair_radius_frac: only used by throat_method="surf"; if set, interconnects the
-        largest pores in a third pass — every pair of pores with radius >=
-        large_pair_radius_frac * max_pore_radius and surface-to-surface gap <=
-        large_pair_max_gap gets a throat (recovers the very large throats that random
-        placement scatters apart). Default is None (disabled).
-    large_pair_radius: only used by throat_method="surf_v2"; phase-2 threshold in µm — every
-        pore with radius >= this value gets at least large_pair_min_connections connections to
-        other such pores, ignoring the surface budget (bounded by n_large * floor / 2 new
-        throats). Set it to PRTRR x the target large-throat radius so forced throats land in
-        that band. Default is None (disabled).
-    large_pair_min_connections: only used by throat_method="surf_v2"; phase-2 floor count per
-        large pore (default None = minc; raise it above minc to add large throats beyond what
-        phases 0-1 already provide at large N). Default is None.
-    large_pair_max_gap: maximum surface-to-surface gap (length, µm) for the large-pair pass
-        of either method ("surf": all pairs within the cap; "surf_v2" phase 2: eligibility
-        cap for the floor candidates — use None to disable the cap entirely). Default is 2.5.
-    large_radius_cutoff: only used by throat_method="surf_v3"; radius threshold (µm, compared
-        against PORE radii) that enables pass 1 of add_throats_by_surf_v3 — an independent
-        sub-network of the pores with radius >= this value, each guaranteed at least ``minc``
-        connections within the large class before the budget-driven pass 2 runs. Default is
-        None (pass 1 disabled; single-pass v3).
-    large_search_factor: only used by throat_method="surf_v4"; pass-1 candidate ball has
-        center-distance radius ``large_search_factor * r_pore + r_pore`` — the wide ball whose
-        candidates are sorted by radius so each pore connects to its ``minc`` LARGEST partners.
-        Default is 2.0 (ball = 3 * r_pore).
-    search_radius_factor2: only used by throat_method="surf_v4"; pass-2 candidate ball has
-        center-distance radius ``search_radius_factor2 * r_pore + r_pore`` — the initial search
-        region for the nearest-by-surface-distance fill. The minc2 floor phase widens beyond
-        this if needed. Default is 3.0 (ball = 4 * r_pore).
-    minc2: only used by throat_method="surf_v4"; minimum total connectivity enforced per pore
-        in pass 2. If a pore ends its initial fill with fewer than ``minc2`` connections, the
-        search ball is widened iteratively until the floor is met or no candidates remain.
-        Default is 0 (disabled).
-    throat_method: which throat-generation routine to use. "surf" (default) uses the
-        two-phase add_throats_by_surf (see order / phase1_* / phase2_* below; maxc maps to its
-        zmax); "surf_v2" uses the redesigned two-phase
-        add_throats_by_surf_v2 with its optional large-pair floor (large_pair_radius). For
-        "surf_v2", search_radius_factor maps to its phase-1 surface-gap limit and
-        minc_search_factor to its phase-0 widening. "surf_v3" uses the two-pass
-        add_throats_by_surf_v3: an optional pass 1 (independent large-pore sub-network, see
-        large_radius_cutoff; ``minc`` is its per-pore connectivity floor) followed by a
-        budget-driven pass 2 with random pore selection. "surf_v4" uses the two-pass
-        add_throats_by_surf_v4 (intended v1 replacement): a pass 1 that connects each pore to
-        its ``minc`` LARGEST partners within a wide ball (see large_search_factor), followed by
-        a pass 2 that fills each pore's budget with nearest-by-surface-distance partners
-        (see search_radius_factor2) and an optional minc2 connectivity floor.
-        Default is "surf".
-    phase1_order: only used by throat_method="surf_v2"; order in which pores are processed
-        in phase 1 ("decreasing", "increasing" or "random"). Default is "decreasing".
+    large_pair_radius_frac: legacy parameter of the old single-pass "surf" method (large-pair
+        third pass); ignored by the current two-phase add_throats_by_surf. Kept so historical
+        study scripts keep running. Default is None.
+    large_radius_cutoff: legacy parameter of the removed "surf_v3" method; ignored. Kept so
+        historical study scripts keep running. Default is None.
+    throat_method: which throat-generation routine to use. Only "surf" (default) is available:
+        the two-phase add_throats_by_surf (see order / phase1_* / phase2_* below; maxc maps to
+        its zmax). The former "surf_v2"/"surf_v3"/"surf_v4" methods were removed — any other
+        value raises ValueError. Default is "surf".
+    phase1_order: legacy parameter of the removed "surf_v2" method; ignored (the two-phase
+        add_throats_by_surf uses ``order`` for its phase 2 instead). Kept so historical study
+        scripts keep running. Default is "decreasing".
     order: only used by throat_method="surf"; order in which pores are processed in its phase 2,
         by radius ("increasing" = smallest first (default), "decreasing" = largest first,
         "random" = shuffled).
@@ -362,9 +319,9 @@ def random_PNM(
         overriding the surface budget but keeping covered fraction < 1. Default is 2.
     BCgrid size: In order to assign the boundary conditions, the volume is discretised using a grid containing  BCgridsize cells per side
     sratio: maximal pore surface area over total intersect area of connected throats ratio (default 1, which is not optimal). sratio can also be a tuple
-    with (c, l, h, sigma) c center o fa normal distribution, l and h lowest and highest values and sigma the stdev. With throat_method="surf_v3" it can
-    additionally be a diameter-dependent profile dict (keys "sr_small", "sr_large", "r_lo_um", "r_hi_um"; see pnm.Stats.sratio_profile_values) evaluated per
-    pore from its radius — pass the SAME dict as sratio_profile to pnm.Stats.invert_pore_distribution_kernel_gamma so model and generator budgets match.
+    with (c, l, h, sigma) c center o fa normal distribution, l and h lowest and highest values and sigma the stdev. It can additionally be a
+    diameter-dependent profile dict (keys "sr_small", "sr_large", "r_lo_um", "r_hi_um"; see pnm.Stats.sratio_profile_values) evaluated per pore from its
+    radius — pass the SAME dict as sratio_profile to pnm.Stats.invert_pore_distribution_kernel_gamma so model and generator budgets match.
     packing_method: packing algorithm to use. One of:
         - "kdtree" (default): candidate pools + cKDTree vectorized batch rejection (fastest at low/mid porosity).
         - "kdtree_importance": as "kdtree" plus occupancy-map importance sampling for the
@@ -390,7 +347,7 @@ def random_PNM(
         packing is skipped entirely and this network is used as-is — the throat-generation
         parameters still apply to it. Useful for parametric studies where several grid points
         share one pore placement (npores/porosity/rdist/packing_* are then ignored).
-    TODO: use a sratio distribution instead of a constant value (partially done for surf_v3: per-pore
+    TODO: use a sratio distribution instead of a constant value (partially done: per-pore
         truncated-normal draw and diameter-dependent profile dict, see above)
     """
 
@@ -459,76 +416,46 @@ def random_PNM(
                 "Unknown packing_method '{}'. Expected 'opt', 'kdtree' or 'kdtree_importance'.".format(packing_method)
             )
 
-    if throat_method == "surf":
-        if sort_by_radius or minc_search_factor is not None or large_pair_radius_frac is not None:
-            warn(
-                "throat_method='surf' now uses the two-phase add_throats_by_surf; "
-                "sort_by_radius, minc_search_factor and large_pair_radius_frac are ignored."
-            )
-        pnm.add_throats_by_surf(
-            pn,
-            ratio=sratio,
-            PRTRR=PRTRR,
-            zmax=maxc,
-            order=order,
-            border_correction=True,
-            phase1_radius_factor=phase1_radius_factor,
-            phase1_min_neighbors=phase1_min_neighbors,
-            phase1_z=phase1_z,
-            phase1_mode=phase1_mode,
-            phase1_neighbours=phase1_neighbours,
-            phase2_radius_factor=phase2_radius_factor,
-            phase2_min_neighbors=phase2_min_neighbors,
-            phase2_zmin=phase2_zmin,
+    if throat_method != "surf":
+        raise ValueError(
+            "Unknown throat_method '{}'. Only 'surf' is available (the former surf_v2/surf_v3/surf_v4 methods were removed).".format(throat_method)
         )
-    elif throat_method == "surf_v2":
-        if large_pair_radius_frac is not None:
-            warn("throat_method='surf_v2' ignores large_pair_radius_frac (use the absolute large_pair_radius instead).")
-        pnm.add_throats_by_surf_v2(
-            pn,
-            ratio=sratio,
-            PRTRR=PRTRR,
-            minc=minc,
-            maxc=maxc,
-            sort_by_radius=sort_by_radius,
-            border_correction=True,
-            search_radius_factor1=minc_search_factor,
-            search_radius_factor2=search_radius_factor,
-            min_neighbors_factor=min_neighbors_factor,
-            phase1_order=phase1_order,
-            seed=seed,
-            large_pair_radius=large_pair_radius,
-            large_pair_min_connections=large_pair_min_connections,
-            large_pair_max_gap=large_pair_max_gap,
+
+    # Legacy parameters of the old single-pass / v2 / v3 methods: warn when set, then ignore.
+    ignored = []
+    if sort_by_radius:
+        ignored.append("sort_by_radius")
+    if minc_search_factor is not None:
+        ignored.append("minc_search_factor")
+    if large_pair_radius_frac is not None:
+        ignored.append("large_pair_radius_frac")
+    if phase1_order != "decreasing":
+        ignored.append("phase1_order")
+    if large_radius_cutoff is not None:
+        ignored.append("large_radius_cutoff")
+    if ignored:
+        warn(
+            "throat_method='surf' uses the two-phase add_throats_by_surf; "
+            + ", ".join(ignored)
+            + " are legacy parameters and ignored."
         )
-    elif throat_method == "surf_v3":
-        if large_pair_radius_frac is not None or minc_search_factor is not None:
-            warn("throat_method='surf_v3' ignores large_pair_radius_frac and minc_search_factor (pure budget + random selection).")
-        pnm.add_throats_by_surf_v3(
-            pn,
-            ratio=sratio,
-            PRTRR=PRTRR,
-            minc=minc,
-            large_radius_cutoff=large_radius_cutoff,
-            border_correction=True,
-            seed=seed,
-        )
-    elif throat_method == "surf_v4":
-        if large_pair_radius_frac is not None or minc_search_factor is not None:
-            warn("throat_method='surf_v4' ignores large_pair_radius_frac and minc_search_factor (pass 1 uses its own wide ball + radius sort).")
-        pnm.add_throats_by_surf_v4(
-            pn,
-            ratio=sratio,
-            PRTRR=PRTRR,
-            minc1=minc,
-            maxc=maxc,
-            search_radius_factor1=large_search_factor,
-            search_radius_factor2=search_radius_factor2,
-            minc2=minc2,
-            border_correction=True,
-        )
-    else:
-        raise ValueError("Unknown throat_method '{}'. Expected 'surf', 'surf_v2', 'surf_v3' or 'surf_v4'.".format(throat_method))
+
+    pnm.add_throats_by_surf(
+        pn,
+        ratio=sratio,
+        PRTRR=PRTRR,
+        zmax=maxc,
+        order=order,
+        border_correction=True,
+        phase1_radius_factor=phase1_radius_factor,
+        phase1_min_neighbors=phase1_min_neighbors,
+        phase1_z=phase1_z,
+        phase1_mode=phase1_mode,
+        phase1_neighbours=phase1_neighbours,
+        phase2_radius_factor=phase2_radius_factor,
+        phase2_min_neighbors=phase2_min_neighbors,
+        phase2_zmin=phase2_zmin,
+    )
 
     if add_periodic:
         pnm.add_periodic_throats(

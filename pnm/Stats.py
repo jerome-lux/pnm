@@ -1460,7 +1460,7 @@ def sratio_profile_values(radii, profile):
     saturating, while lowering it on the large pores makes them saturate earlier. The SAME
     profile must be used by both the inversion (:func:`invert_pore_distribution_kernel_gamma`,
     which evaluates it at the pore bin mid-radii) and the generator
-    (:func:`pnm.Transformation.add_throats_by_surf_v3`, which evaluates it per pore).
+    (:func:`pnm.Transformation.add_throats_by_surf`, which evaluates it per pore).
 
     Parameters
     ----------
@@ -1638,7 +1638,7 @@ def invert_pore_distribution_kernel_gamma(
         keys "sr_small", "sr_large", "r_lo_um", "r_hi_um". When set it REPLACES the scalar
         ``sratio`` — evaluated at each pore bin mid-radius to form the per-class budget
         ``B_i = sr(r_i) * 4*pi*r_i**2`` (the scalar is then ignored). The SAME profile must be
-        passed as ``ratio`` to :func:`pnm.Transformation.add_throats_by_surf_v3` so that the
+        passed as ``ratio`` to :func:`pnm.Transformation.add_throats_by_surf` so that the
         generator's per-pore budgets match the model. Default is None (scalar sratio).
     length_stat : str, optional
         Which per-pair gap statistic feeds step 1: "mean" (default) uses the incomplete-gamma
