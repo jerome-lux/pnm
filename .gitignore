@@ -186,9 +186,10 @@ cython_debug/
 
 ### PNM project ###
 # Generated networks and images (regenerable outputs)
-examples/networks/
-# Parametric study results (regenerable via examples/param_study.py)
-examples/param_study_results/
+# Full network GMLs (~276 MB each, above GitHub's 100 MB limit; bit-reproducible via generate_networks.py)
+examples/networks/*.gml
+# Pore packing caches (~28 MB each, regenerable via generate_networks.py pore_cache_path)
+examples/networks/pores_250000/
 # Kilo local state
 .kilo/
 # Local-only documents, excluded from git sync
@@ -200,4 +201,3 @@ doc/capillary-length-phase2.md
 AGENTS.md
 # Large concentration-field overlays (regenerable via run_diffusion_all.py --save-concentrations, ~300 MB each)
 examples/diffusivity/*_conc.gml
-
