@@ -1,5 +1,6 @@
 # -*- coding: utf-8
 
+import os
 import vtk
 from warnings import warn
 import numpy as np
@@ -34,6 +35,11 @@ class Fast3DViewer:
         self.network = network
         self.pore_actor = None
         self.throat_actor = None
+        # Last render() inputs; reused by save_current_view to rebuild the scene.
+        self._pcmap = None
+        self._tcmap = None
+        self._resolution = 8
+        self._periodic = True
 
     @classmethod
     def fromfile(cls, filename):
@@ -91,7 +97,7 @@ class Fast3DViewer:
 
         self.pore_actor = create_sphere_glyphs(coord=centers, radii=radii, colors=colors)
 
-    def create_throats(self, colors=None, resolution=6):
+    def create_throats(self, colors=None, resolution=6, periodic=True, pore_colors=None):
         """Create a single tube actor representing all throats as cylinders.
 
         Periodic throats are rendered as two tubes each: one crossing the
@@ -105,12 +111,37 @@ class Fast3DViewer:
             use the default actor color. Default is None.
         resolution : int, optional
             Tube mesh resolution (number of sides). Default is 6.
+        periodic : bool, optional
+            Coloring mode for periodic throats. If True (default), both halves
+            of a periodic throat share its per-edge color — the current behavior
+            (for node-only fields that is the mean of the two endpoint pores).
+            If False and ``pore_colors`` is supplied, each half-capillary is
+            colored with the color of the real pore it connects to on that side
+            of the box. Default is True.
+        pore_colors : dict or None, optional
+            Mapping from node label to RGB color, used only when ``periodic`` is
+            False to color each periodic half-capillary by its same-side pore.
+            A missing lookup falls back to the per-edge color (or the default
+            color). Default is None.
+
+        Notes
+        -----
+        The per-endpoint color array must stay aligned with the point array:
+        every appended segment contributes exactly two entries. When
+        ``periodic`` is False and ``pore_colors`` is given but ``colors`` is not,
+        non-periodic throats fall back to the mean of their endpoint pore colors
+        so this alignment is preserved.
         """
 
         heads = []
         tails = []
         radii = []
         cmap = []
+
+        # When ``periodic`` is False and per-pore colors are supplied, each half of a
+        # periodic throat is colored with the color of the real pore it connects to on
+        # that side of the box (instead of the shared per-edge color).
+        use_pore_colors = (not periodic) and pore_colors is not None
 
         extent = self.network.graph.graph.get("extent")
         if extent is None:
@@ -125,6 +156,22 @@ class Fast3DViewer:
                 ind = {"x": 0, "y": 1, "z": 2}
                 pdir = props.get("pdir", "x")
 
+                # Real pore on the +pdir / -pdir side of the box.
+                if c1[ind[pdir]] > c2[ind[pdir]]:
+                    plus_pore, minus_pore = n1, n2
+                else:
+                    plus_pore, minus_pore = n2, n1
+
+                # Uniform color for each half-capillary (see ``use_pore_colors``).
+                if use_pore_colors:
+                    fallback = colors[i] if colors is not None else DEFAULT_COLOR
+                    color_plus = pore_colors.get(plus_pore, fallback)
+                    color_minus = pore_colors.get(minus_pore, fallback)
+                elif colors is not None:
+                    color_plus = colors[i]
+                    color_minus = colors[i]
+
+                # --- Half-capillary crossing the boundary in the +pdir direction. ---
                 c1p = deepcopy(c1)
                 c2p = deepcopy(c2)
                 if c1[ind[pdir]] > c2[ind[pdir]]:
@@ -142,10 +189,10 @@ class Fast3DViewer:
                 heads.append(c1p)
                 tails.append(c2p)
                 radii.extend([props.get("radius", 0.1)] * 2)
+                if colors is not None or use_pore_colors:
+                    cmap.extend([color_plus] * 2)
 
-                if colors is not None:
-                    cmap.extend([colors[i]] * 2)
-
+                # --- Half-capillary crossing the boundary in the -pdir direction. ---
                 c1p = deepcopy(c1)
                 c2p = deepcopy(c2)
                 if c1[ind[pdir]] < c2[ind[pdir]]:
@@ -163,8 +210,8 @@ class Fast3DViewer:
                 heads.append(c1p)
                 tails.append(c2p)
                 radii.extend([props.get("radius", 0.1)] * 2)
-                if colors is not None:
-                    cmap.extend([colors[i]] * 2)
+                if colors is not None or use_pore_colors:
+                    cmap.extend([color_minus] * 2)
 
             else:
                 heads.append(c1)
@@ -172,6 +219,16 @@ class Fast3DViewer:
                 radii.extend([props.get("radius", 0.1)] * 2)
                 if colors is not None:
                     cmap.extend([colors[i]] * 2)
+                elif use_pore_colors:
+                    # No per-edge color available: fall back to the mean of the two
+                    # endpoint pore colors so the color array stays aligned with points.
+                    cn1 = pore_colors.get(n1)
+                    cn2 = pore_colors.get(n2)
+                    if cn1 is not None and cn2 is not None:
+                        cmean = tuple(int(round(0.5 * (a + b))) for a, b in zip(cn1, cn2))
+                    else:
+                        cmean = DEFAULT_COLOR
+                    cmap.extend([cmean] * 2)
 
         self.throat_actor = create_tubes(heads, tails, radii, cmap, resolution=resolution)
 
@@ -194,7 +251,7 @@ class Fast3DViewer:
             del self.renWin
             self.renWin = None
 
-    def render(self, pcmap=None, tcmap=None, resolution=8):
+    def render(self, pcmap=None, tcmap=None, resolution=8, periodic=True):
         """Render the pore network (pores and throats).
 
         Creates the pore and throat actors if they do not exist yet, then adds
@@ -203,21 +260,36 @@ class Fast3DViewer:
         Parameters
         ----------
         pcmap : list of tuple or None, optional
-            Pore colors (RGB tuples). Default is None.
+            Pore colors (RGB tuples), in node order. Default is None.
         tcmap : list of tuple or None, optional
             Throat colors (RGB tuples). Default is None.
         resolution : int, optional
             Mesh resolution for pores and throats. Default is 8.
+        periodic : bool, optional
+            Periodic-throat coloring mode forwarded to
+            :meth:`create_throats`. When False, each half of a periodic throat
+            is colored by its same-side pore (requires ``pcmap``). Default is True.
         """
 
         self.reset_renderer()
+        self._pcmap = pcmap
+        self._tcmap = tcmap
+        self._resolution = resolution
+        self._periodic = periodic
 
         if self.pore_actor is None:
             self.create_pores(colors=pcmap, resolution=resolution)
         self.renderer.AddActor(self.pore_actor)
 
         if self.throat_actor is None:
-            self.create_throats(colors=tcmap, resolution=resolution)
+            pore_color_map = (
+                dict(zip(self.network.graph.nodes(), pcmap))
+                if (not periodic and pcmap is not None)
+                else None
+            )
+            self.create_throats(
+                colors=tcmap, resolution=resolution, periodic=periodic, pore_colors=pore_color_map
+            )
         self.renderer.AddActor(self.throat_actor)
 
     def interact(self, azimuth=20, elevation=30, size=(800, 1000)):
@@ -266,7 +338,7 @@ class Fast3DViewer:
         self.renderer.GetActiveCamera().Elevation(elevation)
         self.renderer.ResetCameraClippingRange()
 
-    def save(self, filename, pcmap=None, tcmap=None, resolution=8, azimuth=20, elevation=30, size=(800, 1000)):
+    def save(self, filename, pcmap=None, tcmap=None, resolution=8, azimuth=20, elevation=30, size=(800, 1000), periodic=True):
         """Render the network offscreen and save it as a JPEG image.
 
         Parameters
@@ -274,7 +346,7 @@ class Fast3DViewer:
         filename : str
             Output JPEG file path.
         pcmap : list of tuple or None, optional
-            Pore colors. Default is None.
+            Pore colors (RGB tuples), in node order. Default is None.
         tcmap : list of tuple or None, optional
             Throat colors. Default is None.
         resolution : int, optional
@@ -285,13 +357,30 @@ class Fast3DViewer:
             Camera elevation angle. Default is 30.
         size : tuple of int, optional
             Window size (width, height). Default is (800, 1000).
+        periodic : bool, optional
+            Periodic-throat coloring mode forwarded to :meth:`render`. When
+            False, each half of a periodic throat is colored by its same-side
+            pore (requires ``pcmap``). Default is True.
 
         Notes
         -----
         For an unknown reason, this does not work after interacting with the
-        scene (the render window may not be closed correctly after interaction).
+        scene (the render window may not close correctly after interaction).
+        To export the view adjusted during ``interact()``, use
+        :meth:`save_current_view` instead.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the parent directory of ``filename`` does not exist.
+        RuntimeError
+            If VTK fails to write the image file.
         """
-        self.render(pcmap=pcmap, tcmap=tcmap, resolution=resolution)
+        parent = os.path.dirname(filename)
+        if parent and not os.path.isdir(parent):
+            raise FileNotFoundError(f"Cannot save image: directory '{parent}' does not exist.")
+
+        self.render(pcmap=pcmap, tcmap=tcmap, resolution=resolution, periodic=periodic)
         self.create_renWin(size)
         self.set_camera(azimuth, elevation)
 
@@ -304,9 +393,100 @@ class Fast3DViewer:
         w2i.SetInput(self.renWin)
         w2i.Update()
         writer.SetInputConnection(w2i.GetOutputPort())
+        # The VTK binding returns None from Write() regardless of the outcome,
+        # so detect failure by checking that the file exists and was just updated.
+        pre = os.stat(filename) if os.path.exists(filename) else None
         writer.SetFileName(filename)
         writer.Write()
+        post = os.stat(filename) if os.path.exists(filename) else None
+        if (
+            post is None
+            or post.st_size == 0
+            or (pre is not None and post.st_mtime_ns == pre.st_mtime_ns)
+        ):
+            raise RuntimeError(f"Failed to write image file '{filename}'.")
         self.close_renWin()
+
+    def save_current_view(self, filename, size=(1600, 2000)):
+        """Save an offscreen JPEG of the current camera view.
+
+        Captures the active camera state (position, focal point, view-up and
+        projection) from this viewer's renderer — typically after
+        ``interact()`` — and re-renders it on a fresh render window without
+        resetting the camera, so the exported image matches exactly what was
+        seen interactively. Unlike :meth:`save`, no azimuth/elevation is
+        applied.
+
+        Parameters
+        ----------
+        filename : str
+            Output JPEG file path.
+        size : tuple of int, optional
+            Offscreen window size (width, height). Default is (1600, 2000).
+
+        Notes
+        -----
+        The scene is rebuilt on a fresh viewer instance: ``render()`` resets
+        the renderer and camera, and reusing the interacted render window for
+        offscreen export is unreliable (see :meth:`save` notes). Requires
+        ``render(pcmap=..., tcmap=...)`` to have been called first.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the parent directory of ``filename`` does not exist.
+        RuntimeError
+            If VTK fails to write the image file.
+        """
+        parent = os.path.dirname(filename)
+        if parent and not os.path.isdir(parent):
+            raise FileNotFoundError(f"Cannot save image: directory '{parent}' does not exist.")
+
+        cam = self.renderer.GetActiveCamera()
+        state = dict(
+            pos=cam.GetPosition(),
+            focal=cam.GetFocalPoint(),
+            viewup=cam.GetViewUp(),
+            parallel=bool(cam.GetParallelProjection()),
+            pscale=cam.GetParallelScale(),
+        )
+
+        out = Fast3DViewer(self.network)
+        out.render(
+            pcmap=self._pcmap, tcmap=self._tcmap, resolution=self._resolution, periodic=self._periodic
+        )
+        out.create_renWin(size=size)
+
+        c2 = out.renderer.GetActiveCamera()
+        c2.SetPosition(state["pos"])
+        c2.SetFocalPoint(state["focal"])
+        c2.SetViewUp(state["viewup"])
+        if state["parallel"]:
+            c2.SetParallelProjection(1)
+            c2.SetParallelScale(state["pscale"])
+        out.renderer.ResetCameraClippingRange()
+
+        out.renWin.OffScreenRenderingOn()
+        out.renWin.Render()
+        w2i = vtk.vtkWindowToImageFilter()
+        writer = vtk.vtkJPEGWriter()
+        writer.SetQuality(100)
+        w2i.SetInput(out.renWin)
+        w2i.Update()
+        writer.SetInputConnection(w2i.GetOutputPort())
+        # The VTK binding returns None from Write() regardless of the outcome,
+        # so detect failure by checking that the file exists and was just updated.
+        pre = os.stat(filename) if os.path.exists(filename) else None
+        writer.SetFileName(filename)
+        writer.Write()
+        post = os.stat(filename) if os.path.exists(filename) else None
+        if (
+            post is None
+            or post.st_size == 0
+            or (pre is not None and post.st_mtime_ns == pre.st_mtime_ns)
+        ):
+            raise RuntimeError(f"Failed to write image file '{filename}'.")
+        out.close_renWin()
 
 
 class PNM_3d_viewer:
@@ -742,8 +922,10 @@ def create_tubes(heads, tails, radii, colors=None, resolution=8):
         colorsdata.SetNumberOfComponents(3)
         colorsdata.SetName("Colors")
         for color in colors:
-            # Début et fin du tube
-            colorsdata.InsertNextTuple(color)
+            # One tuple per endpoint point: ``colors`` already carries two
+            # entries (head, tail) per throat segment. Inserting each entry
+            # twice made the array 2x too long, so VTK read it by point index
+            # and every segment after the first inherited a neighbor's color.
             colorsdata.InsertNextTuple(color)
 
         polydata.GetPointData().AddArray(colorsdata)
@@ -845,7 +1027,18 @@ def create_throat_actor(c1, c2, radius, resolution=6, **kwargs):
 
 
 def vtk_viewer(
-    pn, save=True, render=True, camera=(20, 30), cmap="viridis", filename=None, resolution=8, attr="radius", high=None, low=None
+    pn,
+    save=True,
+    render=True,
+    camera=(20, 30),
+    cmap="viridis",
+    filename=None,
+    resolution=8,
+    attr="radius",
+    high=None,
+    low=None,
+    throat_colors=None,
+    periodic=True,
 ):
     """Generate a 3D rendering of the given pore network using Fast3DViewer.
 
@@ -854,7 +1047,10 @@ def vtk_viewer(
     pn : pore_network
         The pore network model instance to visualize.
     save : bool, optional
-        If True, save the visualization to a JPEG file. Default is True.
+        If True, save the visualization to a JPEG file. Default is True. When
+        ``render`` is also True, the image uses the camera state adjusted
+        during interaction (see :meth:`Fast3DViewer.save_current_view`);
+        otherwise it uses the ``camera`` angles.
     render : bool, optional
         If True, render the network in an interactive VTK window. If False,
         the network is rendered offscreen only. Default is True.
@@ -876,13 +1072,62 @@ def vtk_viewer(
     low : float or None, optional
         Minimum value for colormap normalization. If None, uses the min of
         the attribute values. Default is None.
+    throat_colors : None, array-like of length n_edges, or other value, optional
+        Throat coloring mode (default is None):
+
+        - ``None``: use the edge values of ``attr`` if present; otherwise each
+          throat is colored with the mean of its endpoint nodes so node-only
+          fields (e.g. a solved concentration) still color the throats.
+        - Array-like with one scalar per throat (in edge order): those values
+          are used directly, mapped through the same colormap/normalization.
+        - Any other value (e.g. True): force the pore-mean coloring even if
+          ``attr`` exists on edges.
+    periodic : bool, optional
+        Coloring mode for periodic throats (default is True). If True, both
+        halves of a periodic throat share its per-edge color — for node-only
+        fields that is the mean of the two endpoint pores. If False, each
+        half-capillary crossing a box face is colored with the color of the real
+        pore it connects to on that side of the box (so a stub exiting the +x
+        face takes the color of its +x-face pore). Default is True.
 
     Notes
     -----
     Requires node/edge attribute ``attr`` to exist on the graph (e.g. ``radius``).
+
+    Raises
+    ------
+    ValueError
+        If ``throat_colors`` is an array-like whose length differs from the
+        number of throats.
     """
     pattrval = list(nx.get_node_attributes(pn.graph, attr).values())
     tattrval = list(nx.get_edge_attributes(pn.graph, attr).values())
+
+    def _pore_mean():
+        """Per-throat value as the mean of its endpoint nodes (edge order)."""
+        return [0.5 * (pn.graph.nodes[u][attr] + pn.graph.nodes[v][attr]) for u, v in pn.graph.edges()]
+
+    if throat_colors is None:
+        # Node-only attribute (e.g. a solved concentration field): interpolate each
+        # throat value as the mean of its endpoint nodes so throats follow the field.
+        if len(tattrval) == 0 and len(pattrval) > 0:
+            tattrval = _pore_mean()
+    else:
+        try:
+            explicit = [float(v) for v in throat_colors]
+        except (TypeError, ValueError):
+            explicit = None
+        if explicit is not None:
+            n_edges = pn.graph.number_of_edges()
+            if len(explicit) != n_edges:
+                raise ValueError(
+                    f"throat_colors has {len(explicit)} values; expected {n_edges} "
+                    "(one scalar per throat, in edge order)."
+                )
+            tattrval = explicit
+        elif len(pattrval) > 0:
+            # Non-iterable flag (e.g. True): force pore-mean coloring even if attr exists on edges.
+            tattrval = _pore_mean()
 
     all_vals = pattrval + tattrval
     if len(all_vals) == 0:
@@ -897,17 +1142,17 @@ def vtk_viewer(
 
     pores_cm = [
         np.around(np.array(cmap_obj(norm(r))[:-1]) * 255).astype(np.uint8)
-        for r in nx.get_node_attributes(pn.graph, attr).values()
+        for r in pattrval
     ]
     throats_cm = [
         np.around(np.array(cmap_obj(norm(r))[:-1]) * 255).astype(np.uint8)
-        for r in nx.get_edge_attributes(pn.graph, attr).values()
+        for r in tattrval
     ]
 
     viewer = Fast3DViewer(pn)
 
     if render:
-        viewer.render(pcmap=pores_cm, tcmap=throats_cm, resolution=resolution)
+        viewer.render(pcmap=pores_cm, tcmap=throats_cm, resolution=resolution, periodic=periodic)
         viewer.interact(azimuth=camera[0], elevation=camera[1])
 
     if save:
@@ -921,12 +1166,17 @@ def vtk_viewer(
                 filename = "PNM-{0:d}n-{1:d}e.jpg".format(
                     pn.graph.number_of_nodes(), pn.graph.number_of_edges()
                 )
-        viewer.save(
-            filename,
-            pcmap=pores_cm,
-            tcmap=throats_cm,
-            resolution=resolution,
-            azimuth=camera[0],
-            elevation=camera[1],
-        )
+        if render:
+            # Preserve the camera state adjusted during interaction.
+            viewer.save_current_view(filename)
+        else:
+            viewer.save(
+                filename,
+                pcmap=pores_cm,
+                tcmap=throats_cm,
+                resolution=resolution,
+                azimuth=camera[0],
+                elevation=camera[1],
+                periodic=periodic,
+            )
 

@@ -223,8 +223,7 @@ class molecular_diffusion:
 
         Performance
         -----------
-        Unlike the previous implementation which used ``nx.adjacency_matrix``
-        with slow LIL slicing and ``deepcopy``, this version builds the matrix
+        The matrix is built
         directly in COO format from pre-computed arrays. The dominant cost is
         the single pass over all edges to compute conductances.
         """
