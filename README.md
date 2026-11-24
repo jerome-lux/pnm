@@ -1,16 +1,27 @@
 # PNM — Simple Pore Network Model
 
-Python package for generating random pore networks **fitted to experimental mercury porosimetry (MIP) data** and simulating transport on them: steady-state molecular diffusion (Fick + Knudsen), two-phase flow, and mercury intrusion.
+Python package for generating random pore networks **fitted to experimental mercury porosimetry (MIP) data** and simulating transport on them: steady-state molecular diffusion (Fick + Knudsen) and mercury intrusion.
 
 - Author: Jerome Lux (`jerome.lux@univ-lr.fr`) — version 1.1
 - Network format: **GML** (GEXF degrades set/list attributes; pickle is used only for internal caches)
+
+<p align="center">
+    <img src="examples/networks/20261122_asym5095_250k_budget_e1.25_sr0.4_rand_seed7_throats.png" alt="Experimental vs generated throat size distribution" width="100%" />
+</p>
+
+<p align="center"><em>Experimental (GM1) vs generated throat size distribution — `kernel_budget` inversion, e = 1.25 / sratio = 0.4, `order="random"`, seed 7; Jensen Shannon Divergence ≈ 0.018.</em></p>
+
+<p align="center">
+    <img src="examples/VIZU/view-20261122_asym5095_250k_budget_e1.25_sr0.4_rand_seed7__conduit-All-xyz_conc.jpg" alt="Concentration field after a diffusion simulation between two opposite faces" width="75%" />
+</p>
+
+<p align="center"><em>Steady-state concentration field from a diffusion simulation (Fick + Knudsen, "conduit" throat model) between two opposite faces of the same 250k-pore network; average connectivity ⟨z⟩ ≈ 9.23.</em></p>
 
 ## Requirements & installation
 
 Python ≥ 3.9 (developed on 3.12). Core dependencies: `numpy`, `scipy`, `networkx`, `scikit-learn`; `matplotlib` for plots, `vtk` for 3D visualization.
 
-```bash
-source /home/jlux/miniforge3/bin/activate vtk   # or your own environment
+```bash# or your own environment
 pip install -e .                                # from the project root
 ```
 
@@ -78,7 +89,7 @@ python3 run_diffusion_all.py examples/networks \
 
 Defaults match `examples/Simulation.ipynb`: Dinf = 1.25e-5 m²/s (CO₂ in air), Ma = 44 g/mol, T = 293 K, networks in µm (`--scale 1e-6`).
 
-### 5. Diffusion solver (Python)
+### 5. Diffusion solver
 
 ```python
 from pnm import molecular_diffusion
@@ -128,8 +139,8 @@ Full derivation of all five inversions — including the parameter-free gamma va
 
 | Recipe | Setup | Result |
 |--------|-------|--------|
-| **asym50_95 budget — default of `fitted_random_PNM`** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel_budget` e=1.25/sr=0.4; surf order="random", phase1_z=0, p2f=2, maxc=1024 | JSD **0.0099** @ N=1.5e5 (ties the kernel best within MC noise, near-exact large band) |
-| asym50_95 kernel | same window; `kernel` e=1.75/sr=0.7; surf order="decreasing" | JSD **0.0093** @ N=1.5e5 (best overall on that window) |
+| **asym50_95 budget — default of `fitted_random_PNM`** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel_budget` e=1.25/sr=0.4; surf order="random", phase1_z=0, p2f=2, maxc=1024 | JSD **0.0099** @ N=1.5e5 (near-exact large band) |
+
 
 ## Notes & gotchas
 
@@ -137,9 +148,12 @@ Full derivation of all five inversions — including the parameter-free gamma va
 - **Pass `PRTRR` explicitly at every call site**; pore bins are always `throat_radii * PRTRR`.
 - `sratio` is the fraction of a pore's surface covered by throats — keep it in [0, 1] and pass the same value to the inversion and the generator (model/generator budgets must match).
 - Node `category` is a **set** of side labels (`x-, x+, y-, y+, z-, z+, inner, none`); GML round-trips restore it automatically.
-- Study scripts/results live outside the repository (external SSD) — see `AGENTS.md`.
 
 ## Documentation
 
 - `doc/pore-distribution-inversion.md` — inversion theory (independent / kernel / budget / water-filling / parameter-free gamma)
-- `AGENTS.md` — project notes, study history and performance reference
+
+## Credits
+
+- **Author**: Jerome Lux (`jerome.lux@univ-lr.fr`)
+- The documentation (this README and `doc/`) as well as the code optimization were carried out with the assistance of an AI coding agent.
