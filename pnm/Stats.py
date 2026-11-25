@@ -372,15 +372,18 @@ def inverse_transform_sampling_from_raw_data(data, bins, n_samples=1000, low=0, 
 def _corrected_throat_counts(volumes, midradii, deltaR, e):
     """Step 1 of the pore-distribution inversions: throat volume -> count distribution.
 
-    Each bin's experimental volume is divided by a characteristic cross-section raised to the
-    empirical corrective power ``e`` and the result is normalized to sum to 1::
+    Each bin's experimental volume is divided by its characteristic cross-section times a mean
+    capillary length modelled as ``midradii[i]**e``, and the result is normalized to sum to 1::
 
-        cdist[i] = volumes[i] / (pi * (midradii[i]**2 + deltaR[i]**2/12))**e
+        cdist[i] = volumes[i] / (pi * (midradii[i]**2 + deltaR[i]**2/12) * midradii[i]**e)
         cdist /= cdist.sum()
 
     The term ``midradii[i]**2 + deltaR[i]**2/12`` is exactly the mean squared radius ``E[r^2]``
-    of a radius drawn uniformly in bin i, so each bin's volume is divided by
-    ``(pi * E[r^2])**e`` (``e = 1`` means no correction).
+    of a radius drawn uniformly in bin i, so each bin's volume is divided by the cross-section
+    ``(pi * E[r^2])`` times the empirical length factor ``r**e`` (``e = 0`` means pure
+    cross-section correction). Since 2026-11-25 this step reads ``v / (A * r**e)``; before that
+    date it read ``v / A**e``, so historical e values follow the reparameterization documented in
+    doc/pore-distribution-inversion.pdf §2.
 
     Parameters
     ----------
@@ -392,7 +395,8 @@ def _corrected_throat_counts(volumes, midradii, deltaR, e):
         Throat bin widths (same length as ``volumes``); must equal the differences between
         consecutive bin edges.
     e : float
-        Empirical corrective factor ("alpha"; 1 = no correction).
+        Empirical corrective exponent ("alpha"): mean capillary length modelled as ``r**e``
+        (0 = pure cross-section correction).
 
     Returns
     -------
@@ -415,7 +419,10 @@ def _corrected_throat_counts(volumes, midradii, deltaR, e):
         )
 
     cdist = np.array(
-        [volumes[i] / (np.pi * (midradii[i] ** 2 + (1.0 / 12) * deltaR[i] ** 2)) ** e for i in range(len(volumes))]
+        [
+            volumes[i] / (np.pi * (midradii[i] ** 2 + (1.0 / 12) * deltaR[i] ** 2) * midradii[i] ** e)
+            for i in range(len(volumes))
+        ]
     )
     csum = float(cdist.sum())
     if not np.isfinite(csum) or csum <= 0:
@@ -453,9 +460,9 @@ def invert_pore_distribution_independent(volumes, midradii, deltaR, e):
     assuming **independent pairing** of the two pores connected by a throat.
 
     Step 1 (:func:`_corrected_throat_counts`) converts the per-bin throat volumes into a throat
-    COUNT distribution ``cdist`` with the empirical corrective factor ``e``:
+    COUNT distribution ``cdist`` with the empirical corrective exponent ``e``:
 
-        cdist[i] = volumes[i] / (pi * (midradii[i]**2 + deltaR[i]**2/12))**e,  then normalize.
+        cdist[i] = volumes[i] / (pi * (midradii[i]**2 + deltaR[i]**2/12) * midradii[i]**e),  then normalize.
 
     Step 2 inverts the pairing model under which the two pores of a throat are drawn
     independently from the pore distribution ``x`` and the throat class is set by the smaller
@@ -473,7 +480,8 @@ def invert_pore_distribution_independent(volumes, midradii, deltaR, e):
         Throat bin widths (same length as ``volumes``); must equal the differences between
         consecutive bin edges.
     e : float
-        Empirical corrective factor ("alpha"; 1 = no correction).
+        Empirical corrective exponent ("alpha"): mean capillary length modelled as ``r**e``
+        (0 = pure cross-section correction).
 
     Returns
     -------
@@ -491,7 +499,7 @@ def invert_pore_distribution_independent(volumes, midradii, deltaR, e):
     large pore spends its budget on cheap nearby small throats before distant large partners are
     reached, so large-large pairs are rarer than independence predicts and this inversion
     systematically mis-estimates the pore distribution (large-throat deficit). For the corrected
-    model see :func:`invert_pore_distribution_kernel` and ``doc/pore-distribution-inversion.md``.
+    model see :func:`invert_pore_distribution_kernel` and ``doc/pore-distribution-inversion.pdf``.
     """
     cdist = _corrected_throat_counts(volumes, midradii, deltaR, e)
     return cdist, _independent_recurrence(cdist)
@@ -513,13 +521,14 @@ def invert_pore_distribution_kernel(
     spatial **exclusion kernel** that models the pairing actually performed by the generator.
 
     Step 1 is shared with :func:`invert_pore_distribution_independent`
-    (:func:`_corrected_throat_counts`): each bin's volume is divided by
-    ``(pi * (midradii**2 + deltaR**2/12))**e`` and normalized, yielding the throat COUNT
-    distribution ``cdist`` (one probability per throat bin, summing to 1).
+    (:func:`_corrected_throat_counts`): each bin's volume is divided by the cross-section
+    ``pi * (midradii**2 + deltaR**2/12)`` times the length factor ``midradii**e``, then
+    normalized, yielding the throat COUNT distribution ``cdist`` (one probability per throat
+    bin, summing to 1).
 
     Step 2 inverts the pairing model with an **exclusion kernel** that models the spatial
     pairing actually performed by :func:`pnm.Transformation.add_throats_by_surf` (see Notes for
-    a summary of the derivation; full derivation in ``doc/pore-distribution-inversion.md``). The
+    a summary of the derivation; full derivation in ``doc/pore-distribution-inversion.pdf``). The
     partner of a focal pore in class i is not drawn from ``x`` but from the size-conditioned
     distribution
 
@@ -552,7 +561,8 @@ def invert_pore_distribution_kernel(
         Throat bin widths (same length as ``volumes``); must equal the differences between
         consecutive bin edges.
     e : float
-        Empirical corrective factor ("alpha"; 1 = no correction).
+        Empirical corrective exponent ("alpha"): mean capillary length modelled as ``r**e``
+        (0 = pure cross-section correction).
     PRTRR : float, optional
         Pore radius to throat radius ratio (throat radius = min(r1, r2) / PRTRR). Used to map
         throat bins onto pore bins in the kernel. Default is 2.0.
@@ -589,17 +599,6 @@ def invert_pore_distribution_kernel(
 
     Notes
     -----
-    **Why the independent model fails.** The recurrence of theory.typ assumes that the two pores
-    connected by a throat are drawn independently from the pore distribution ``x``. In the actual
-    generator, pairing is spatial: pass 1 of :func:`add_throats_by_surf` scans each pore's
-    candidates in increasing surface-to-surface distance and accepts a pair only while both
-    pores' surface budgets (``sratio * 4*pi*r**2``) still fit the throat cross-section. A large
-    focal pore therefore spends its budget on cheap nearby small throats long before a distant
-    large partner is reached, so large-large pairs are far rarer than independence predicts and
-    the generated network systematically under-produces large throats (the ">0.5 um band"
-    deficit). The independent inversion compensates for nothing: it predicts an ``x`` that would
-    reproduce the experiment only if pairing were random.
-
     **Kernel derivation.** Let a focal pore of class i have radius ``r_i`` and surface budget
     ``B_i = sratio * 4*pi*r_i**2``. A partner at center distance s is connected with probability
     ~ exp(-(s/D_i)^3): the number of neighbors within s grows as (4/3)*pi*s^3*rho, so the
@@ -645,10 +644,10 @@ def invert_pore_distribution_kernel(
     and the corresponding throat tail stays unreachable regardless of the inversion (a shared
     artifact, not a kernel defect).
 
-    Full derivation with all intermediate steps: ``doc/pore-distribution-inversion.md``.
+    Full derivation with all intermediate steps: ``doc/pore-distribution-inversion.pdf``.
     """
     # ------------------------------------------------------------------
-    # Step 1: volume -> count distribution with empirical corrective factor e.
+    # Step 1: volume -> count distribution with empirical corrective exponent e.
     # (Shared with invert_pore_distribution_independent.)
     # ------------------------------------------------------------------
     cdist = _corrected_throat_counts(volumes, midradii, deltaR, e)
@@ -719,16 +718,17 @@ def invert_pore_distribution_kernel(
             return np.inf
         rho = 9.0 * porosity / (4.0 * np.pi * r3mean)
         m = np.minimum.outer(r, r) ** 2 @ x
-        D = np.cbrt(np.maximum(sratio * 4.0 * np.pi * r**2 / (rho * (4.0 / 3.0) * np.pi * (np.pi * m / PRTRR**2)), tiny))
+        D = np.cbrt(
+            np.maximum(sratio * 4.0 * np.pi * r**2 / (rho * (4.0 / 3.0) * np.pi * (np.pi * m / PRTRR**2)), tiny)
+        )
         s = r[:, None] + r[None, :]
         W = np.exp(-np.minimum((s / D[:, None]) ** 3, 745.0))
         rowsum = W @ x
         K = x[None, :] * W / np.maximum(rowsum[:, None], tiny)
         pc = np.empty(n_bins)
         for k in range(n_bins):
-            pc[k] = (
-                x[k] * (K[k, k] + float(K[k, k + 1 :].sum()))
-                + (float(np.dot(x[k + 1 :], K[k + 1 :, k])) if k < n_bins - 1 else 0.0)
+            pc[k] = x[k] * (K[k, k] + float(K[k, k + 1 :].sum())) + (
+                float(np.dot(x[k + 1 :], K[k + 1 :, k])) if k < n_bins - 1 else 0.0
             )
         return float(np.max(np.abs(pc - cdist)))
 
@@ -803,7 +803,8 @@ def invert_pore_distribution_kernel_experimental(
         Throat bin widths (same length as ``volumes``); must equal the differences between
         consecutive bin edges.
     e : float
-        Empirical corrective factor ("alpha"; 1 = no correction).
+        Empirical corrective exponent ("alpha"): mean capillary length modelled as ``r**e``
+        (0 = pure cross-section correction).
     PRTRR : float, optional
         Pore radius to throat radius ratio (throat radius = min(r1, r2) / PRTRR). Default is 2.0.
     porosity : float, optional
@@ -899,7 +900,9 @@ def invert_pore_distribution_kernel_experimental(
             return np.inf
         rho = 9.0 * porosity / (4.0 * np.pi * r3mean)
         m = np.minimum.outer(r, r) ** 2 @ x
-        D = np.cbrt(np.maximum(sratio * 4.0 * np.pi * r**2 / (rho * (4.0 / 3.0) * np.pi * (np.pi * m / PRTRR**2)), tiny))
+        D = np.cbrt(
+            np.maximum(sratio * 4.0 * np.pi * r**2 / (rho * (4.0 / 3.0) * np.pi * (np.pi * m / PRTRR**2)), tiny)
+        )
         s = r[:, None] + r[None, :]
         W = np.exp(-np.minimum((s / D[:, None]) ** 3, 745.0))
         rowsum = W @ x
@@ -1010,7 +1013,8 @@ def invert_pore_distribution_kernel_waterfill(
         Throat bin widths (same length as ``volumes``); must equal the differences between
         consecutive bin edges.
     e : float
-        Empirical corrective factor ("alpha"; 1 = no correction) used by step 1.
+        Empirical corrective exponent ("alpha"): mean capillary length modelled as ``r**e``
+        (0 = pure cross-section correction), used by step 1.
     PRTRR : float, optional
         Pore radius to throat radius ratio (throat radius = min(r1, r2) / PRTRR). Default is 2.0.
     porosity : float, optional
@@ -1059,7 +1063,7 @@ def invert_pore_distribution_kernel_waterfill(
     so the two should be compared on the target window rather than assumed equivalent.
 
     Full context: this addresses the multi-capillary limitation of the single-link derivation — see
-    ``doc/pore-distribution-inversion.md`` §5.4–5.5 for the equal-degree idealization this replaces.
+    ``doc/pore-distribution-inversion.pdf`` §5.4–5.5 for the equal-degree idealization this replaces.
     """
     cdist = _corrected_throat_counts(volumes, midradii, deltaR, e)
     n_bins = cdist.size
@@ -1125,7 +1129,7 @@ def invert_pore_distribution_kernel_waterfill(
             return np.inf
         pc = np.empty(n_bins)
         for k in range(n_bins):
-            up = float((x[k:] * T[k, k:]).sum())          # sum_{j>=k} x_j*T[k,j]
+            up = float((x[k:] * T[k, k:]).sum())  # sum_{j>=k} x_j*T[k,j]
             dn = float((x[k + 1 :] * T[k + 1 :, k]).sum()) if k < n_bins - 1 else 0.0
             pc[k] = x[k] * (up + dn) / zbar
         return float(np.max(np.abs(pc - cdist)))
@@ -1218,7 +1222,8 @@ def invert_pore_distribution_kernel_budget(
         Throat bin widths (same length as ``volumes``); must equal the differences between
         consecutive bin edges.
     e : float
-        Empirical corrective factor ("alpha"; 1 = no correction) used by step 1.
+        Empirical corrective exponent ("alpha"): mean capillary length modelled as ``r**e``
+        (0 = pure cross-section correction), used by step 1.
     PRTRR : float, optional
         Pore radius to throat radius ratio (throat radius = min(r1, r2) / PRTRR). Default is 2.0.
     porosity : float, optional
@@ -1405,7 +1410,7 @@ def invert_pore_distribution_kernel_budget(
 def _exp_upper_incomplete_gamma(s: float, x):
     """Stable evaluation of ``exp(x) * Gamma(s, x)``, the upper incomplete gamma times its exponential.
 
-    The product appears in the kernel length moment of ``doc/pore-distribution-inversion.md`` §5.6.2::
+    The product appears in the kernel length moment of ``doc/pore-distribution-inversion.pdf`` §5.6.2::
 
         <s>_ij = D_i * exp(x_ij) * Gamma(4/3, x_ij),   x_ij = ((r_i + r_j)/D_i)**3 > 0.
 
@@ -1441,10 +1446,7 @@ def _exp_upper_incomplete_gamma(s: float, x):
     if np.any(~direct):
         xa = x[~direct]
         out[~direct] = xa ** (s - 1.0) * (
-            1.0
-            + (s - 1.0) / xa
-            + (s - 1.0) * (s - 2.0) / xa**2
-            + (s - 1.0) * (s - 2.0) * (s - 3.0) / xa**3
+            1.0 + (s - 1.0) / xa + (s - 1.0) * (s - 2.0) / xa**2 + (s - 1.0) * (s - 2.0) * (s - 3.0) / xa**3
         )
     return out
 
@@ -1501,9 +1503,7 @@ def sratio_profile_values(radii, profile):
     if not all(v > 0.0 for v in (sr_small, sr_large, r_lo, r_hi)):
         raise ValueError(f"all sratio profile values must be positive, got {profile!r}")
     if not r_lo < r_hi:
-        raise ValueError(
-            f"profile transition interval requires r_lo_um < r_hi_um, got {r_lo:g} >= {r_hi:g}"
-        )
+        raise ValueError(f"profile transition interval requires r_lo_um < r_hi_um, got {r_lo:g} >= {r_hi:g}")
     if max(sr_small, sr_large) > 1.0:
         warn(
             "sratio profile exceeds 1 (max of sr_small/sr_large = "
@@ -1559,7 +1559,7 @@ def invert_pore_distribution_kernel_gamma(
     **parameter-free capillary-length correction** derived from the exclusion-kernel geometry.
 
     This is the parameter-free "Phase 2" inversion derived in
-    ``doc/pore-distribution-inversion.md`` §5.6: it replaces the empirical corrective exponent
+    ``doc/pore-distribution-inversion.pdf`` §5.6: it replaces the empirical corrective exponent
     ``e`` of step 1 by a per-class mean capillary length computed from the *same* Poisson-gas model
     that produces the exclusion kernel (no free parameter —
     only ``porosity``, ``sratio`` and ``PRTRR``, exactly as in
@@ -1677,7 +1677,7 @@ def invert_pore_distribution_kernel_gamma(
     Notes
     -----
     **Why this exists.** Step 1 of :func:`invert_pore_distribution_kernel` divides each bin's
-    volume by ``(pi * E[r^2])**e``, which silently assumes a power law ``Lbar_k ~ m_k**(2(e-1))``
+    volume by ``(pi * E[r^2]) * m_k**e``, which silently assumes a power law ``Lbar_k ~ m_k**e``
     for the mean capillary length with a POSITIVE exponent. Measured per-class gaps on generated
     networks (doc §3) have the opposite sign: nearly flat / slightly increasing for
     ``m_k < 0.03 um`` and DECREASING as ``m_k**(-0.8...-1.1)`` above — no value of ``e`` can fix
@@ -1719,7 +1719,7 @@ def invert_pore_distribution_kernel_gamma(
     recalibration lever for the structural small-pore deficit / mid-band excess of the generated
     throat distribution (study: ``examples/study_sratio_profile_150k.py``, results in AGENTS.md).
 
-    Full derivation + validation data: ``doc/pore-distribution-inversion.md`` §5.6.
+    Full derivation + validation data: ``doc/pore-distribution-inversion.pdf`` §5.6.
     """
     volumes = np.asarray(volumes, dtype=float).ravel()
     midradii = np.asarray(midradii, dtype=float).ravel()
@@ -1730,9 +1730,7 @@ def invert_pore_distribution_kernel_gamma(
             f"{volumes.size}, {midradii.size}, {deltaR.size}"
         )
     if length_stat not in ("mean", "median", "packing"):
-        raise ValueError(
-            f"length_stat must be 'mean', 'median' or 'packing', got {length_stat!r}"
-        )
+        raise ValueError(f"length_stat must be 'mean', 'median' or 'packing', got {length_stat!r}")
 
     n_bins = volumes.size
     # Pore bin mid-radii (pores are PRTRR times larger than throats).
@@ -1869,9 +1867,9 @@ def invert_pore_distribution_kernel_gamma(
         total = float(xn.sum())
         return xn / total if total > 0.0 else None
 
-    # Initial iterate: independent-pairing recurrence on the e=1 (uncorrected) count distribution —
+    # Initial iterate: independent-pairing recurrence on the e=0 (uncorrected) count distribution —
     # a neutral starting point, since this model carries no empirical exponent at all.
-    x = _independent_recurrence(_corrected_throat_counts(volumes, midradii, deltaR, 1.0)).copy()
+    x = _independent_recurrence(_corrected_throat_counts(volumes, midradii, deltaR, 0.0)).copy()
 
     err = np.inf
     cdist_final = None
@@ -1915,10 +1913,7 @@ def invert_pore_distribution_kernel_gamma(
                 lam *= 0.5
                 stall = 0
         if verbose and (it % 25 == 0 or err < tol):
-            print(
-                f"  invert_pore_distribution_kernel_gamma: iteration {it}: max |dx| = {err:.3e} "
-                f"(lam={lam:g})"
-            )
+            print(f"  invert_pore_distribution_kernel_gamma: iteration {it}: max |dx| = {err:.3e} " f"(lam={lam:g})")
         if err < tol:
             break
 
@@ -1960,12 +1955,12 @@ def invert_pore_distribution_kernel_gamma_hybrid(
     This is :func:`invert_pore_distribution_kernel_gamma` with one change — the per-class mean
     capillary length fed to step 1. The pure derivation has a **turnover**: it peaks near
     ``m_k ~ 0.1 um`` and then declines toward contact in the largest classes (the generator's
-    nearest-neighbor selection among sparse giants, doc/pore-distribution-inversion.md §5.6.5). A flat or
+    nearest-neighbor selection among sparse giants, doc/pore-distribution-inversion.pdf §5.6.5). A flat or
     declining step-1 length demands too many large throats per unit volume; through the coupled
     fixed point this shifts pore mass into the largest classes (measured on keep75: 93.8 % vs
     90.2 % of pore volume in pores >= 1 um) and the generated networks then overshoot the >0.5 um
     band (+3.8 pt at sratio=0.8, N=1e5; +8.5 pt at sratio=0.7, N=2e5) while starving the smallest
-    band (~-14…-16 pt), JSD ~0.023–0.030 vs 0.019 for ``invert_pore_distribution_kernel`` with e=1.25.
+    band (~-14…-16 pt), JSD ~0.023–0.030 vs 0.019 for ``invert_pore_distribution_kernel`` with e=0.25.
 
     **The correction.** Keep the derived length (validated to <=3 % against measurement) in the
     small-class regime ``m_k <= m_switch``, and beyond it replace the turnover by a power-law
@@ -1989,8 +1984,9 @@ def invert_pore_distribution_kernel_gamma_hybrid(
         used up to and including this radius. Default is 0.03 um (the validation limit of doc §6).
     tail_exponent : float, optional
         Exponent ``beta`` of the power-law continuation beyond ``m_switch``. Default is 0.5 — it
-        reproduces the effective steepness of the JSD-optimal kernel recipe e=1.25 (whose step-1
-        length grows as ``m**(2*(e-1)) = m**0.5``). This is an explicit parameter: the hybrid is a
+        reproduces the effective steepness of the JSD-optimal kernel recipe (e = 0.25 in the
+        current convention), whose step-1 length grew as ``m**0.5`` under the pre-2026-11-25
+        formula. This is an explicit parameter: the hybrid is a
         two-regime model, not fully parameter-free; beta absorbs the class dependence that the pure
         derivation misses in the transition/large regime.
     max_iter, tol, verbose : int / float / bool, optional
@@ -2010,10 +2006,10 @@ def invert_pore_distribution_kernel_gamma_hybrid(
     Notes
     -----
     **Status.** Tested 2026-11-16 on keep75 (v3 pass 1, cutoff 0.5 um, N=1e5): best JSD 0.0234 at
-    beta=0.3 — does not beat ``invert_pore_distribution_kernel`` with e=1.25 (JSD 0.0195) and only
+    beta=0.3 — does not beat ``invert_pore_distribution_kernel`` with e=0.25 (JSD 0.0195) and only
     ties the plain gamma inversion; the structural b1-deficit/b3-excess residual persists for every
     tested beta, so this variant is rejected as a reference recipe and kept for research only. Full
-    analysis: ``doc/pore-distribution-inversion.md`` §5.6.6.
+    analysis: ``doc/pore-distribution-inversion.pdf`` §5.6.6.
     """
     volumes = np.asarray(volumes, dtype=float).ravel()
     midradii = np.asarray(midradii, dtype=float).ravel()
@@ -2123,8 +2119,8 @@ def invert_pore_distribution_kernel_gamma_hybrid(
         total = float(xn.sum())
         return xn / total if total > 0.0 else None
 
-    # Initial iterate: same neutral starting point as the plain gamma inversion (e=1 counts).
-    x = _independent_recurrence(_corrected_throat_counts(volumes, midradii, deltaR, 1.0)).copy()
+    # Initial iterate: same neutral starting point as the plain gamma inversion (e=0 counts).
+    x = _independent_recurrence(_corrected_throat_counts(volumes, midradii, deltaR, 0.0)).copy()
 
     err = np.inf
     cdist_final = None
@@ -2177,9 +2173,7 @@ def invert_pore_distribution_kernel_gamma_hybrid(
     if resid > 1e-3:
         warn(
             "invert_pore_distribution_kernel_gamma_hybrid: fixed point not reached within {} "
-            "iterations (forward-model residual {:.3e} > 1e-3); returning the last iterate.".format(
-                max_iter, resid
-            )
+            "iterations (forward-model residual {:.3e} > 1e-3); returning the last iterate.".format(max_iter, resid)
         )
 
     return cdist_final, x

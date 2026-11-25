@@ -2,9 +2,9 @@
 """Generate pore networks fitted to an experimental MIP throat distribution (one seed each).
 
 Thin CLI around :func:`pnm.fitted_random_PNM`. The defaults are the best "budget" recipe of the
-asym50_95 study: ``kernel_budget`` inversion with e = 1.25 / sratio = 0.4 and two-phase surf
+asym50_95 study: ``kernel_budget`` inversion with e = 0.25 / sratio = 0.4 and two-phase surf
 order="random", phase1_z=0, phase2_radius_factor=2, maxc=1024 (JSD 0.0099 at N = 150k; see
-doc/pore-distribution-inversion.md §5.5.2). Each seed is an independent realization of the recipe
+doc/pore-distribution-inversion.pdf §5.5.2). Each seed is an independent realization of the recipe
 (different packing AND throat generation), so a set of seeds estimates Monte-Carlo variability of
 derived quantities such as the effective diffusivity.
 
@@ -72,8 +72,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--inversion", default="kernel_budget",
                    choices=["kernel_budget", "kernel_waterfill", "kernel", "kernel_gamma", "independent"],
                    help="Pore-distribution inversion (default: best budget recipe).")
-    p.add_argument("--e", type=float, default=1.25,
-                   help="Step-1 corrective exponent (ignored by the parameter-free kernel_gamma).")
+    p.add_argument("--e", type=float, default=0.25,
+                   help="Step-1 corrective exponent: mean capillary length modelled as r**e "
+                        "(0 = pure cross-section correction; ignored by the parameter-free kernel_gamma).")
     p.add_argument("--sratio", type=float, default=0.4, help="Surface coverage ratio (in [0, 1]).")
     p.add_argument("--order", default="random", choices=["increasing", "decreasing", "random"],
                    help='Phase-2 processing order of the two-phase "surf" method.')

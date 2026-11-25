@@ -196,6 +196,7 @@ examples/networks/pores_250000/
 doc/theory.typ
 doc/experiment-summary.typ
 doc/experiment-summary.pdf
+doc/pore-distribution-inversion.typ
 doc/capillary-length-phase2.md
 # Agent working notes — local only, never pushed to the remote repo
 AGENTS.md

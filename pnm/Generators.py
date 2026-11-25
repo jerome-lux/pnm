@@ -570,7 +570,7 @@ _INVERSIONS = {
 }
 
 
-def _inversion_pore_distribution(mip, inversion="kernel_budget", e=1.25, PRTRR=2.0, porosity=0.35, sratio=0.4):
+def _inversion_pore_distribution(mip, inversion="kernel_budget", e=0.25, PRTRR=2.0, porosity=0.35, sratio=0.4):
     """Run the selected pore-distribution inversion and return its pore count distribution.
 
     Parameters
@@ -583,8 +583,9 @@ def _inversion_pore_distribution(mip, inversion="kernel_budget", e=1.25, PRTRR=2
         no geometry arguments) — or a user-provided callable with the kernel-family signature
         ``(volumes, midradii, deltaR, e, PRTRR=..., porosity=..., sratio=...) -> (cdist, pdist)``.
     e : float, optional
-        Step-1 corrective exponent (shared by all inversions except "kernel_gamma", which derives
-        the capillary length from the kernel geometry and ignores it). Default is 1.25.
+        Step-1 corrective exponent: mean capillary length modelled as ``r**e`` (0 = pure
+        cross-section correction; shared by all inversions except "kernel_gamma", which derives
+        the capillary length from the kernel geometry and ignores it). Default is 0.25.
     PRTRR : float, optional
         Pore-to-throat radius ratio; must match the generator call. Default is 2.0.
     porosity : float, optional
@@ -642,7 +643,7 @@ def fitted_random_PNM(
     porosity=0.35,
     PRTRR=2.0,
     inversion="kernel_budget",
-    e=1.25,
+    e=0.25,
     sratio=0.4,
     extent=(1.0, 1.0, 1.0),
     BCgridsize=150,
@@ -659,9 +660,9 @@ def fitted_random_PNM(
     a pore count distribution with the selected inversion; (2) pack ``npores`` pores from it at
     target porosity with the kdtree packer; (3) generate throats with :func:`random_PNM`
     (two-phase "surf" by default, plus periodic boundary throats and geometry). The defaults are
-    the best "budget" recipe of the asym50_95 study: ``kernel_budget`` inversion with e = 1.25 /
+    the best "budget" recipe of the asym50_95 study: ``kernel_budget`` inversion with e = 0.25 /
     sratio = 0.4 and two-phase surf order="random", phase1_z=0, phase2_radius_factor=2, maxc=1024
-    (JSD 0.0099 at N = 150k; see doc/pore-distribution-inversion.md §5.5.2).
+    (JSD 0.0099 at N = 150k; see doc/pore-distribution-inversion.pdf §5.5.2).
 
     Parameters
     ----------
@@ -685,8 +686,9 @@ def fitted_random_PNM(
         "kernel_budget" (default), "kernel_waterfill", the parameter-free "kernel_gamma", or
         "independent". Default is "kernel_budget".
     e : float, optional
-        Step-1 corrective exponent of the inversion (ignored by the parameter-free "kernel_gamma").
-        Default is 1.25 (budget recipe).
+        Step-1 corrective exponent of the inversion: mean capillary length modelled as ``r**e``
+        (0 = pure cross-section correction; ignored by the parameter-free "kernel_gamma").
+        Default is 0.25 (budget recipe).
     sratio : float, optional
         Surface coverage ratio; passed to BOTH the inversion and the throat generation so model
         and generator budgets match. Must stay in [0, 1] (fraction of a pore's surface covered by
