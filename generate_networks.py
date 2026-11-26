@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Generate pore networks fitted to an experimental MIP throat distribution (one seed each).
 
-Thin CLI around :func:`pnm.fitted_random_PNM`. The defaults are the best "budget" recipe of the
-asym50_95 study: ``kernel_budget`` inversion with e = 0.25 / sratio = 0.4 and two-phase surf
-order="random", phase1_z=0, phase2_radius_factor=2, maxc=1024 (JSD 0.0099 at N = 150k; see
-doc/pore-distribution-inversion.pdf §5.5.2). Each seed is an independent realization of the recipe
+Thin CLI around :func:`pnm.fitted_random_PNM`. The defaults are the best-fit recipe of the
+asym50_95 study: plain ``kernel`` inversion with e = 1.5 / sratio = 0.3 and two-phase surf
+order="decreasing", phase1_z=0, phase2_radius_factor=3, maxc=1024 (JSD 0.0059 at N = 250k seed 7,
+stable across seeds 7–10; see doc/pore-distribution-inversion.pdf §5). Each seed is an independent
+realization of the recipe
 (different packing AND throat generation), so a set of seeds estimates Monte-Carlo variability of
 derived quantities such as the effective diffusivity.
 
@@ -61,7 +62,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "(default: examples/networks).")
     p.add_argument("--n-jobs", type=int, default=4, help="Parallel workers (one per seed).")
     p.add_argument("--force", action="store_true", help="Overwrite existing output networks.")
-    # Experimental window and recipe parameters (defaults = best budget recipe).
+    # Experimental window and recipe parameters (defaults = best-fit kernel recipe).
     p.add_argument("--data", default=str(DATA), help="Experimental MIP CSV file.")
     p.add_argument("--asym-frac", default="0.5,0.95",
                    help="Asymmetric cumulative-volume window 'low,high' on the full MIP curve "
@@ -69,18 +70,18 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--porosity", type=float, default=0.35, help="Target pore-body porosity.")
     p.add_argument("--prtrr", type=float, default=2.0, help="Pore-to-throat radius ratio.")
     p.add_argument("--bcgridsize", type=int, default=150, help="Boundary-detection grid resolution.")
-    p.add_argument("--inversion", default="kernel_budget",
+    p.add_argument("--inversion", default="kernel",
                    choices=["kernel_budget", "kernel_waterfill", "kernel", "kernel_gamma", "independent"],
-                   help="Pore-distribution inversion (default: best budget recipe).")
-    p.add_argument("--e", type=float, default=0.25,
+                   help="Pore-distribution inversion (default: best-fit kernel recipe).")
+    p.add_argument("--e", type=float, default=1.5,
                    help="Step-1 corrective exponent: mean capillary length modelled as r**e "
                         "(0 = pure cross-section correction; ignored by the parameter-free kernel_gamma).")
-    p.add_argument("--sratio", type=float, default=0.4, help="Surface coverage ratio (in [0, 1]).")
-    p.add_argument("--order", default="random", choices=["increasing", "decreasing", "random"],
+    p.add_argument("--sratio", type=float, default=0.3, help="Surface coverage ratio (in [0, 1]).")
+    p.add_argument("--order", default="decreasing", choices=["increasing", "decreasing", "random"],
                    help='Phase-2 processing order of the two-phase "surf" method.')
     p.add_argument("--phase1-z", type=int, default=0,
                    help="Largest-partner seeding count (0 disables phase 1).")
-    p.add_argument("--phase2-radius-factor", type=float, default=2.0,
+    p.add_argument("--phase2-radius-factor", type=float, default=3.0,
                    help="Phase-2 candidate-ball factor of the two-phase 'surf' method.")
     p.add_argument("--maxc", type=int, default=1024, help="Maximum pore connectivity (zmax).")
     return p.parse_args(argv)

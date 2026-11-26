@@ -570,7 +570,7 @@ _INVERSIONS = {
 }
 
 
-def _inversion_pore_distribution(mip, inversion="kernel_budget", e=0.25, PRTRR=2.0, porosity=0.35, sratio=0.4):
+def _inversion_pore_distribution(mip, inversion="kernel", e=1.5, PRTRR=2.0, porosity=0.35, sratio=0.3):
     """Run the selected pore-distribution inversion and return its pore count distribution.
 
     Parameters
@@ -578,20 +578,20 @@ def _inversion_pore_distribution(mip, inversion="kernel_budget", e=0.25, PRTRR=2
     mip : MIPData
         Windowed experimental throat distribution (``volumes``, ``midradii``, ``deltaR``).
     inversion : str or callable, optional
-        One of "kernel", "kernel_budget" (default), "kernel_waterfill" or the parameter-free
+        One of "kernel" (default), "kernel_budget", "kernel_waterfill" or the parameter-free
         "kernel_gamma" — or the string "independent" for the classical i.i.d. model (which takes
         no geometry arguments) — or a user-provided callable with the kernel-family signature
         ``(volumes, midradii, deltaR, e, PRTRR=..., porosity=..., sratio=...) -> (cdist, pdist)``.
     e : float, optional
         Step-1 corrective exponent: mean capillary length modelled as ``r**e`` (0 = pure
         cross-section correction; shared by all inversions except "kernel_gamma", which derives
-        the capillary length from the kernel geometry and ignores it). Default is 0.25.
+        the capillary length from the kernel geometry and ignores it). Default is 1.5.
     PRTRR : float, optional
         Pore-to-throat radius ratio; must match the generator call. Default is 2.0.
     porosity : float, optional
         Target pore-body porosity of the packing that will be generated. Default is 0.35.
     sratio : float, optional
-        Surface coverage ratio (fraction of a pore's surface covered by throats). Default is 0.4.
+        Surface coverage ratio (fraction of a pore's surface covered by throats). Default is 0.3.
 
     Returns
     -------
@@ -642,15 +642,15 @@ def fitted_random_PNM(
     seed=7,
     porosity=0.35,
     PRTRR=2.0,
-    inversion="kernel_budget",
-    e=0.25,
-    sratio=0.4,
+    inversion="kernel",
+    e=1.5,
+    sratio=0.3,
     extent=(1.0, 1.0, 1.0),
     BCgridsize=150,
     throat_method="surf",
-    order="random",
+    order="decreasing",
     phase1_z=0,
-    phase2_radius_factor=2.0,
+    phase2_radius_factor=3.0,
     maxc=1024,
     pore_cache_path=None,
 ):
@@ -660,9 +660,10 @@ def fitted_random_PNM(
     a pore count distribution with the selected inversion; (2) pack ``npores`` pores from it at
     target porosity with the kdtree packer; (3) generate throats with :func:`random_PNM`
     (two-phase "surf" by default, plus periodic boundary throats and geometry). The defaults are
-    the best "budget" recipe of the asym50_95 study: ``kernel_budget`` inversion with e = 0.25 /
-    sratio = 0.4 and two-phase surf order="random", phase1_z=0, phase2_radius_factor=2, maxc=1024
-    (JSD 0.0099 at N = 150k; see doc/pore-distribution-inversion.pdf §5.5.2).
+    the best-fit recipe of the asym50_95 study: plain ``kernel`` inversion with e = 1.5 /
+    sratio = 0.3 and two-phase surf order="decreasing", phase1_z=0, phase2_radius_factor=3,
+    maxc=1024 (JSD 0.0059 at N = 250k seed 7, stable across seeds 7–10; see
+    doc/pore-distribution-inversion.pdf §5).
 
     Parameters
     ----------
@@ -682,17 +683,17 @@ def fitted_random_PNM(
         Pore-to-throat radius ratio: a throat between pores of radii r_i, r_j has radius
         min(r_i, r_j)/PRTRR. Must match the inversion call. Default is 2.0.
     inversion : str or callable, optional
-        Pore-distribution inversion to use (see :func:`_inversion_pore_distribution`): "kernel",
-        "kernel_budget" (default), "kernel_waterfill", the parameter-free "kernel_gamma", or
-        "independent". Default is "kernel_budget".
+        Pore-distribution inversion to use (see :func:`_inversion_pore_distribution`): "kernel"
+        (default), "kernel_budget", "kernel_waterfill", the parameter-free "kernel_gamma", or
+        "independent". Default is "kernel".
     e : float, optional
         Step-1 corrective exponent of the inversion: mean capillary length modelled as ``r**e``
         (0 = pure cross-section correction; ignored by the parameter-free "kernel_gamma").
-        Default is 0.25 (budget recipe).
+        Default is 1.5 (best-fit kernel recipe).
     sratio : float, optional
         Surface coverage ratio; passed to BOTH the inversion and the throat generation so model
         and generator budgets match. Must stay in [0, 1] (fraction of a pore's surface covered by
-        throats). Default is 0.4 (budget recipe).
+        throats). Default is 0.3 (best-fit kernel recipe).
     extent : tuple of float, optional
         Initial box extent; rescaled by the packer to reach ``porosity``. Default is (1, 1, 1).
     BCgridsize : int, optional
@@ -700,12 +701,16 @@ def fitted_random_PNM(
     throat_method : str, optional
         Throat-generation method forwarded to random_PNM (only "surf" is available). Default is "surf".
     order : str, optional
-        Phase-2 processing order of the two-phase "surf" method. Default is "random" (budget recipe).
+        Phase-2 processing order of the two-phase "surf" method. Default is "decreasing"
+        (best-fit kernel recipe; it beats "random"/"increasing" at every grid point on asym50_95).
     phase1_z : int, optional
         Largest-partner seeding count of the two-phase "surf" method; 0 disables it. Default is 0
         (best for every recipe on the asym50_95 window).
     phase2_radius_factor : float, optional
-        Phase-2 candidate-ball factor of the two-phase "surf" method. Default is 2.0 (budget recipe).
+        Phase-2 candidate-ball factor of the two-phase "surf" method. Default is 3.0
+        (best-fit kernel recipe; also ``random_PNM``'s own default). The connectivity floor
+        ``phase2_zmin`` stays at ``random_PNM``'s default of 2 — measured to have no effect on JSD
+        for sratio >= 0.3.
     maxc : int, optional
         Maximum pore connectivity (zmax) of the throat generation. Default is 1024.
     pore_cache_path : str or Path or None, optional

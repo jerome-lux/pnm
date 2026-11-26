@@ -5,17 +5,20 @@ Python package for generating random pore networks **fitted to experimental merc
 - Author: Jerome Lux (`jerome.lux@univ-lr.fr`) — version 1.1
 - Network format: **GML** (GEXF degrades set/list attributes; pickle is used only for internal caches)
 
-<p align="center">
-    <img src="examples/figs/kernel_e1.5_sr0.3_odecr_zmin1_p1z0_p2f3_maxc1024_seed7.png" alt="Experimental vs generated throat size distribution" width="100%" />
-</p>
-
-<p align="center"><em>Experimental (GM1) vs generated throat size distribution — `kernel` inversion, e = 1.5 / sratio = 0.3, `order="decreasing"`, phase1_z=0, seed 7; Jensen Shannon Divergence ≈ 0.006 @ N = 250k.</em></p>
-
-<p align="center">
-    <img src="examples/VIZU/view-20261126_asym5095_250k_kernel_e1.5_sr0.3_dec_p1z0_seed7__conduit-All-xyz_conc.jpg" alt="Concentration field after a diffusion simulation between two opposite faces" width="75%" />
-</p>
-
-<p align="center"><em>Steady-state concentration field from a diffusion simulation (Fick + Knudsen, "conduit" throat model) between two opposite faces of the same 250k-pore network; average connectivity ⟨z⟩ ≈ 7.50.</em></p>
+<table>
+  <tr>
+    <td align="center" valign="center">
+      <img src="examples/figs/kernel_e1.5_sr0.3_odecr_zmin1_p1z0_p2f3_maxc1024_seed7.png" alt="Experimental vs generated throat size distribution" width="98%" />
+    </td>
+    <td align="center" valign="top">
+      <img src="examples/VIZU/view-20261126_asym5095_250k_kernel_e1.5_sr0.3_dec_p1z0_seed7__conduit-All-xyz_conc.jpg" alt="Concentration field after a diffusion simulation between two opposite faces" width="98%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><em>Experimental (GM1) vs generated throat size distribution — `kernel` inversion, e = 1.5 / sratio = 0.3, `order="decreasing"`, phase1_z=0, seed 7; Jensen Shannon Divergence ≈ 0.006 @ N = 250k.</em></td>
+    <td align="center"><em>Steady-state concentration field from a diffusion simulation (Fick + Knudsen, "conduit" throat model) between two opposite faces of the same 250k-pore network; average connectivity ⟨z⟩ ≈ 7.50.</em></td>
+  </tr>
+</table>
 
 ## Requirements & installation
 
@@ -52,18 +55,14 @@ mip = load_mip_data("examples/data/GM1.csv", rmin=0.068, rmax=26.53)   # throat 
 
 ### 2. Generate one fitted network (single function call)
 
-`fitted_random_PNM` runs the whole pipeline — inversion of the experimental throat distribution into a pore count distribution, kdtree packing at target porosity, and two-phase throat generation. **The best fit comes from the plain `kernel` inversion** (e = 1.5 / sratio = 0.3, surf `order="decreasing"`, phase1_z=0 — JSD ≈ 0.006 @ N = 250k); the default is the "budget" recipe (`kernel_budget`, e = 0.25 / sratio = 0.4, `order="random"`):
+`fitted_random_PNM` runs the whole pipeline — inversion of the experimental throat distribution into a pore count distribution, kdtree packing at target porosity, and two-phase throat generation. **The defaults are the best-fit recipe**: plain `kernel` inversion (e = 1.5 / sratio = 0.3) with surf `order="decreasing"`, phase1_z=0, phase2_radius_factor=3 — JSD ≈ 0.006 @ N = 250k:
 
 ```python
 from pnm import fitted_random_PNM
 
-net = fitted_random_PNM(mip, npores=250_000, seed=7)   # default: budget recipe (JSD ≈ 0.013 @ N = 250k)
-# best fit — plain kernel inversion (JSD ≈ 0.006 @ N = 250k):
-net = fitted_random_PNM(
-    mip, npores=250_000, seed=7,
-    inversion="kernel", e=1.5, sratio=0.3, order="decreasing", phase1_z=0, phase2_radius_factor=3,
-)
-# other inversions: "kernel_gamma" (parameter-free, e ignored), "kernel_waterfill", "independent", or a callable
+net = fitted_random_PNM(mip, npores=250_000, seed=7)   # default: best-fit kernel recipe (JSD ≈ 0.006 @ N = 250k)
+# other inversions: "kernel_budget" (e = 0.25 / sratio = 0.4, order="random"),
+#                   "kernel_gamma" (parameter-free, e ignored), "kernel_waterfill", "independent", or a callable
 net.write("my_network", method="gml")                  # ".gml" is appended by write()
 ```
 
@@ -75,7 +74,7 @@ One independent realization per seed, parallel workers, GML + gen-vs-exp plot pe
 
 ```bash
 python3 generate_networks.py --seeds 7,8,9,10 --npores 250000 --out-dir examples/networks
-# recipe overrides: --inversion kernel --e 1.75 --sratio 0.7 --order decreasing ...
+# recipe overrides: --inversion kernel_budget --e 0.25 --sratio 0.4 --order random ...
 ```
 
 ### 4. Steady-state diffusion (CLI)
@@ -143,8 +142,8 @@ Full derivation of all five inversions — including the parameter-free gamma va
 
 | Recipe | Setup | Result |
 |--------|-------|--------|
-| **asym50_95 kernel — best fit** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel` e=1.5/sr=0.3; surf order="decreasing", phase1_z=0, p2f=3, maxc=1024 | JSD **0.0059** @ N=2.5e5 seed 7 (stable across seeds 7–10: 0.006–0.011) |
-| **asym50_95 budget — default of `fitted_random_PNM`** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel_budget` e=0.25/sr=0.4; surf order="random", phase1_z=0, p2f=2, maxc=1024 | JSD **≈ 0.013** @ N=2.5e5 (near-exact large band) |
+| **asym50_95 kernel — best fit, default of `fitted_random_PNM`** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel` e=1.5/sr=0.3; surf order="decreasing", phase1_z=0, p2f=3, maxc=1024 | JSD **0.0059** @ N=2.5e5 seed 7 (stable across seeds 7–10: 0.006–0.011) |
+| **asym50_95 budget** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel_budget` e=0.25/sr=0.4; surf order="random", phase1_z=0, p2f=2, maxc=1024 | JSD **≈ 0.013** @ N=2.5e5 (near-exact large band) |
 
 
 ## Notes & gotchas
@@ -152,7 +151,7 @@ Full derivation of all five inversions — including the parameter-free gamma va
 - **Never call `compute_geometry(autothroats=True)` after generation** — it erases all custom throat radii/lengths (resets every throat radius to `min(r1, r2)`). Always use `autothroats=False` (`random_PNM` already does).
 - **Pass `PRTRR` explicitly at every call site**; pore bins are always `throat_radii * PRTRR`.
 - `sratio` is the fraction of a pore's surface covered by throats — keep it in [0, 1] and pass the same value to the inversion and the generator (model/generator budgets must match).
-- **Step-1 reparameterization (2026-11-25)**: the corrective exponent `e` now models the mean capillary length as `r**e` (`cdist ∝ v / (A·r**e)`, `e=0` = pure cross-section correction). Before that date it was `cdist ∝ v / A**e`; all historical e values shift by one (new = old − 1, e.g. the kernel recipe is now e=0.75, the budget default e=0.25). See `doc/pore-distribution-inversion.pdf` §2.
+- **Step-1 reparameterization (2026-11-25)**: the corrective exponent `e` now models the mean capillary length as `r**e` (`cdist ∝ v / (A·r**e)`, `e=0` = pure cross-section correction). Before that date it was `cdist ∝ v / A**e`; all historical e values shift by one (new = old − 1, e.g. the then-production kernel recipe 1.75 → 0.75, budget 1.25 → 0.25). See `doc/pore-distribution-inversion.pdf` §2.
 - Node `category` is a **set** of side labels (`x-, x+, y-, y+, z-, z+, inner, none`); GML round-trips restore it automatically.
 
 ## Documentation
