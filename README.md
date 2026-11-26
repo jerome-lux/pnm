@@ -6,16 +6,16 @@ Python package for generating random pore networks **fitted to experimental merc
 - Network format: **GML** (GEXF degrades set/list attributes; pickle is used only for internal caches)
 
 <p align="center">
-    <img src="examples/networks/20261122_asym5095_250k_budget_e0.25_sr0.4_rand_seed7_throats.png" alt="Experimental vs generated throat size distribution" width="100%" />
+    <img src="examples/figs/kernel_e1.5_sr0.3_odecr_zmin1_p1z0_p2f3_maxc1024_seed7.png" alt="Experimental vs generated throat size distribution" width="100%" />
 </p>
 
-<p align="center"><em>Experimental (GM1) vs generated throat size distribution — `kernel_budget` inversion, e = 0.25 / sratio = 0.4, `order="random"`, seed 7; Jensen Shannon Divergence ≈ 0.018.</em></p>
+<p align="center"><em>Experimental (GM1) vs generated throat size distribution — `kernel` inversion, e = 1.5 / sratio = 0.3, `order="decreasing"`, phase1_z=0, seed 7; Jensen Shannon Divergence ≈ 0.006 @ N = 250k.</em></p>
 
 <p align="center">
-    <img src="examples/VIZU/view-20261122_asym5095_250k_budget_e0.25_sr0.4_rand_seed7__conduit-All-xyz_conc.jpg" alt="Concentration field after a diffusion simulation between two opposite faces" width="75%" />
+    <img src="examples/VIZU/view-20261126_asym5095_250k_kernel_e1.5_sr0.3_dec_p1z0_seed7__conduit-All-xyz_conc.jpg" alt="Concentration field after a diffusion simulation between two opposite faces" width="75%" />
 </p>
 
-<p align="center"><em>Steady-state concentration field from a diffusion simulation (Fick + Knudsen, "conduit" throat model) between two opposite faces of the same 250k-pore network; average connectivity ⟨z⟩ ≈ 9.23.</em></p>
+<p align="center"><em>Steady-state concentration field from a diffusion simulation (Fick + Knudsen, "conduit" throat model) between two opposite faces of the same 250k-pore network; average connectivity ⟨z⟩ ≈ 7.50.</em></p>
 
 ## Requirements & installation
 
@@ -52,18 +52,22 @@ mip = load_mip_data("examples/data/GM1.csv", rmin=0.068, rmax=26.53)   # throat 
 
 ### 2. Generate one fitted network (single function call)
 
-`fitted_random_PNM` runs the whole pipeline — inversion of the experimental throat distribution into a pore count distribution, kdtree packing at target porosity, and two-phase throat generation. **The defaults are the best "budget" recipe** (`kernel_budget`, e = 0.25 / sratio = 0.4, surf `order="random"`, JSD ≈ 0.01):
+`fitted_random_PNM` runs the whole pipeline — inversion of the experimental throat distribution into a pore count distribution, kdtree packing at target porosity, and two-phase throat generation. **The best fit comes from the plain `kernel` inversion** (e = 1.5 / sratio = 0.3, surf `order="decreasing"`, phase1_z=0 — JSD ≈ 0.006 @ N = 250k); the default is the "budget" recipe (`kernel_budget`, e = 0.25 / sratio = 0.4, `order="random"`):
 
 ```python
 from pnm import fitted_random_PNM
 
-net = fitted_random_PNM(mip, npores=250_000, seed=7)   # budget recipe defaults
-# other inversions: inversion="kernel" (e=0.75/sr=0.7), "kernel_gamma" (parameter-free, e ignored),
-#                   "kernel_waterfill", "independent", or a callable
+net = fitted_random_PNM(mip, npores=250_000, seed=7)   # default: budget recipe (JSD ≈ 0.013 @ N = 250k)
+# best fit — plain kernel inversion (JSD ≈ 0.006 @ N = 250k):
+net = fitted_random_PNM(
+    mip, npores=250_000, seed=7,
+    inversion="kernel", e=1.5, sratio=0.3, order="decreasing", phase1_z=0, phase2_radius_factor=3,
+)
+# other inversions: "kernel_gamma" (parameter-free, e ignored), "kernel_waterfill", "independent", or a callable
 net.write("my_network", method="gml")                  # ".gml" is appended by write()
 ```
 
-Useful options: `porosity` (default 0.35), `PRTRR` (2.0), `sratio`, `order`, `phase1_z`, `maxc`, and `pore_cache_path` — a pickle path that caches the packed pore set so re-runs skip packing (and stay bit-identical).
+Useful options: `porosity` (default 0.35), `PRTRR` (2.0), `sratio`, `order`, `phase1_z`, `phase2_radius_factor`, `maxc`, and `pore_cache_path` — a pickle path that caches the packed pore set so re-runs skip packing (and stay bit-identical).
 
 ### 3. Batch generation (CLI)
 
@@ -139,7 +143,8 @@ Full derivation of all five inversions — including the parameter-free gamma va
 
 | Recipe | Setup | Result |
 |--------|-------|--------|
-| **asym50_95 budget — default of `fitted_random_PNM`** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel_budget` e=0.25/sr=0.4; surf order="random", phase1_z=0, p2f=2, maxc=1024 | JSD **0.0099** @ N=1.5e5 (near-exact large band) |
+| **asym50_95 kernel — best fit** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel` e=1.5/sr=0.3; surf order="decreasing", phase1_z=0, p2f=3, maxc=1024 | JSD **0.0059** @ N=2.5e5 seed 7 (stable across seeds 7–10: 0.006–0.011) |
+| **asym50_95 budget — default of `fitted_random_PNM`** | window = cumulative volume [50 %, 95 %] → [0.068, 26.53] µm; `kernel_budget` e=0.25/sr=0.4; surf order="random", phase1_z=0, p2f=2, maxc=1024 | JSD **≈ 0.013** @ N=2.5e5 (near-exact large band) |
 
 
 ## Notes & gotchas
