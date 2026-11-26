@@ -630,9 +630,13 @@ def invert_pore_distribution_kernel(
     rho), so the inversion is a fixed-point iteration: freeze K at iterate l, solve each class's
     equation by backward substitution from the largest bin down — keeping the diagonal self-term
     ``K(k->k) = x_k * W[k,k]/rowsum_k`` coupled makes each equation quadratic in ``x[k]`` (the
-    positive root is taken), which avoids the period-2 oscillation a fully frozen top class would
-    exhibit. Negative right-hand sides are clamped to zero; the iterate is renormalized after
-    every sweep so it stays on the simplex.
+    positive root is taken). Negative right-hand sides are clamped to zero; the update is adaptively
+    damped (``lam = 1 -> halved to a 0.05 floor on stagnation``, exactly as in
+    :func:`invert_pore_distribution_kernel_gamma`): without damping, the map exhibits a period-2
+    cycle in the large-pore region on wide windows (the clamp kinks the map: C_k overshoots cdist[k]
+    and pins x[k] to 0 on one phase, undershoots it on the other), so an undamped run returns an
+    arbitrary phase of that cycle with spurious exact-zero bins; damping converges to a strictly
+    positive solution. The iterate is renormalized after every sweep so it stays on the simplex.
 
     **No new calibration parameter.** The kernel uses only quantities already fixed by the model:
     ``porosity``, ``sratio`` and ``PRTRR`` (plus the experimental data). In particular it replaces
@@ -734,14 +738,37 @@ def invert_pore_distribution_kernel(
 
     x = _independent_recurrence(cdist).copy()
     err = np.inf
+    lam = 1.0  # damping factor of the fixed-point update (adaptive: halved on stagnation)
+    best_err = np.inf
+    stall = 0
     for it in range(max_iter):
         xn = _kernel_step(x)
         if xn is None:
             break
-        err = float(np.max(np.abs(xn - x)))
-        x = xn
+        # Damped update. The undamped map exhibits a period-2 cycle in the large-pore region on wide
+        # windows (a kink induced by zero-mass classes: C_k overshoots cdist[k] and clamps x[k] to 0
+        # on one phase, undershoots it on the other), so damping is required for convergence rather
+        # than optional — exactly as in :func:`invert_pore_distribution_kernel_gamma`. lam starts at 1
+        # (fast path) and is halved below whenever progress stalls.
+        xd = (1.0 - lam) * x + lam * xn
+        total = float(xd.sum())
+        if not (total > 0.0):
+            break
+        xd /= total
+        err = float(np.max(np.abs(xd - x)))
+        x = xd
+        # Adaptive damping: halve lam after 25 consecutive iterations without a 5% improvement of the
+        # step size (floor 0.05; below it further halving is numerically pointless).
+        if err < 0.95 * best_err:
+            best_err = err
+            stall = 0
+        else:
+            stall += 1
+            if stall >= 25 and lam > 0.05:
+                lam *= 0.5
+                stall = 0
         if verbose and (it % 25 == 0 or err < tol):
-            print(f"  invert_pore_distribution_kernel: iteration {it}: max |dx| = {err:.3e}")
+            print(f"  invert_pore_distribution_kernel: iteration {it}: max |dx| = {err:.3e} " f"(lam={lam:g})")
         if err < tol:
             break
 
