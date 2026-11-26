@@ -151,7 +151,6 @@ Full derivation of all five inversions — including the parameter-free gamma va
 - **Never call `compute_geometry(autothroats=True)` after generation** — it erases all custom throat radii/lengths (resets every throat radius to `min(r1, r2)`). Always use `autothroats=False` (`random_PNM` already does).
 - **Pass `PRTRR` explicitly at every call site**; pore bins are always `throat_radii * PRTRR`.
 - `sratio` is the fraction of a pore's surface covered by throats — keep it in [0, 1] and pass the same value to the inversion and the generator (model/generator budgets must match).
-- **Step-1 reparameterization (2026-11-25)**: the corrective exponent `e` now models the mean capillary length as `r**e` (`cdist ∝ v / (A·r**e)`, `e=0` = pure cross-section correction). Before that date it was `cdist ∝ v / A**e`; all historical e values shift by one (new = old − 1, e.g. the then-production kernel recipe 1.75 → 0.75, budget 1.25 → 0.25). See `doc/pore-distribution-inversion.pdf` §2.
 - Node `category` is a **set** of side labels (`x-, x+, y-, y+, z-, z+, inner, none`); GML round-trips restore it automatically.
 
 ## Documentation
